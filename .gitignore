@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# FastF1 cache directory
+cache/
+
 # C extensions
 *.so
 
