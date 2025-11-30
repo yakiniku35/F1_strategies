@@ -38,7 +38,7 @@ def get_driver_colors(session):
         rgb_colors = {}
         for driver, hex_color in color_mapping.items():
             hex_color = hex_color.lstrip('#')
-            rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+            rgb = tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
             rgb_colors[driver] = rgb
         return rgb_colors
     except Exception:

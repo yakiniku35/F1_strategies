@@ -1,6 +1,5 @@
 import streamlit as st
 import plotly.graph_objects as go
-import time
 import os
 from groq import Groq
 from dotenv import load_dotenv
