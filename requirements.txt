@@ -1,0 +1,8 @@
+streamlit
+fastf1
+pandas
+numpy
+plotly
+groq
+python-dotenv
+matplotlib
