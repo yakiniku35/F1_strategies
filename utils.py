@@ -12,7 +12,7 @@ if not os.path.exists(CACHE_DIR):
 fastf1.Cache.enable_cache(CACHE_DIR)
 
 # Frame rate for replay (from f1-race-replay)
-FPS = 4
+FPS = 25
 DT = 1 / FPS
 
 # Tyre compound mapping (from f1-race-replay)
