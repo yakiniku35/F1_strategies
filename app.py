@@ -322,12 +322,7 @@ if "data_loaded" in st.session_state and st.session_state.data_loaded:
     # --- 自動播放邏輯 (Auto-Play Loop) ---
     # 這是 Streamlit 模擬動畫的關鍵：使用 st.rerun()
     if st.session_state.is_playing:
-        # 使用選擇的播放速度
-        st.session_state.current_time += 10 * playback_speed
+        # 使用選擇的播放速度，若為 None 則使用默認值 1.0
+        st.session_state.current_time += 10 * (playback_speed or 1.0)
         if st.session_state.current_time >= st.session_state.end_time:
-            st.session_state.is_playing = False
-        time.sleep(0.1)  # 控制更新頻率
-        st.rerun()  # 強制刷新畫面，產生動畫效果
-
-else:
-    st.info("👈 請在左側輸入比賽資訊並載入數據")
+        st.session_state.is_playing = False
