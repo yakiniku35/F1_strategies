@@ -1,12 +1,11 @@
-import fastf1
-import pandas as pd
 import os
+
+import fastf1
 
 
 CACHE_DIR = 'cache'
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
-    
 
 fastf1.Cache.enable_cache(CACHE_DIR)
 
@@ -22,6 +21,7 @@ def load_race_data(year, grandprix, session_type='R'):
         return session
     except Exception as e:
         return str(e)
+
 
 def get_driver_lap_data(session, driver_code):
     """
