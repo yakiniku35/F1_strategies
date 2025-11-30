@@ -38,7 +38,7 @@ def ask_groq_commentary(context_text, style="commentator"):
                     "content": context_text,
                 },
             ],
-            model="llama3-70b-8192",
+            model="openai/gpt-oss-20b",
             temperature=0.7,
             max_tokens=1000,
         )

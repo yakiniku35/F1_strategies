@@ -325,4 +325,4 @@ if "data_loaded" in st.session_state and st.session_state.data_loaded:
         # 使用選擇的播放速度，若為 None 則使用默認值 1.0
         st.session_state.current_time += 10 * (playback_speed or 1.0)
         if st.session_state.current_time >= st.session_state.end_time:
-        st.session_state.is_playing = False
+            st.session_state.is_playing = False
