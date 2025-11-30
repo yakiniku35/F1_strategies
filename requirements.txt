@@ -1,8 +1,18 @@
-streamlit
-fastf1
-pandas
-numpy
-plotly
+# F1 Race Replay with ML Prediction
+# Core dependencies
+fastf1>=3.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Arcade graphics library (replaces Streamlit/Plotly)
+arcade>=2.6.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+
+# Optional: AI commentary (keep for future use)
 groq
 python-dotenv
-scipy
+
+# Data processing
+scipy>=1.10.0
