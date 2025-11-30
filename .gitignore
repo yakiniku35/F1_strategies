@@ -5,6 +5,10 @@ __pycache__/
 
 # FastF1 cache directory
 cache/
+.fastf1-cache/
+
+# Computed telemetry data (can be regenerated)
+computed_data/
 
 # C extensions
 *.so
@@ -17,7 +21,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
