@@ -27,7 +27,7 @@ def get_driver_lap_data(session, driver_code):
     載入特定車手的所有圈速數據
     Load all lap data for a specific driver
     """
-    laps = session.laps.pick_driver(driver_code)
+    laps = session.laps.pick_drivers(driver_code)
     # 挑選乾淨的圈（沒有進站、沒有黃旗）作為基準分析
     clean_laps = laps.clean(clean=True)
     return laps, clean_laps

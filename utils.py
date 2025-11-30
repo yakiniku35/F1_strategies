@@ -97,7 +97,7 @@ def process_replay_data(_session):
     # 1. 收集每個車手的遙測數據
     for driver in drivers:
         try:
-            laps_driver = _session.laps.pick_driver(driver)
+            laps_driver = _session.laps.pick_drivers(driver)
             if laps_driver.empty:
                 continue
 
