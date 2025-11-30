@@ -306,8 +306,8 @@ class PreRacePredictor:
         Fetch historical race results to train the model.
         We need: Qualifying Position -> Final Position correlation
         """
-        X_train = [] # 特徵: [排位賽名次, 車隊實力, 車手歷史積分]
-        y_train = [] # 目標: [正賽最終名次]
+        X_train = []  # 特徵: [排位賽名次, 車隊實力, 車手歷史積分]
+        y_train = []  # 目標: [正賽最終名次]
 
         # 獲取該年度賽程
         schedule = fastf1.get_event_schedule(year)
@@ -321,22 +321,24 @@ class PreRacePredictor:
                 # 載入比賽數據 (不需要詳細遙測數據，只需要成績)
                 session = fastf1.get_session(year, race_event['RoundNumber'], 'R')
                 session.load(telemetry=False, weather=False, messages=False)
-                
+
                 results = session.results
-                
+
                 # 簡單計算車隊平均排名作為實力指標
                 team_strength = results.groupby('TeamName')['Position'].mean().to_dict()
 
                 for driver in results.index:
                     d_data = results.loc[driver]
-                    
+
                     # 排除退賽 (DNF/NC) 的數據
-                    if d_data['ClassifiedPosition'] not in ['R', 'F', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20']: 
+                    valid_positions = ['R', 'F', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+                                       '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20']
+                    if d_data['ClassifiedPosition'] not in valid_positions:
                         continue
 
                     # 特徵 1: 排位賽名次 (Grid Position)
                     grid_pos = d_data['GridPosition']
-                    
+
                     # 特徵 2: 車隊實力分數 (越低越好)
                     team_score = team_strength.get(d_data['TeamName'], 10)
 
@@ -345,7 +347,7 @@ class PreRacePredictor:
 
                     X_train.append([grid_pos, team_score, points])
                     y_train.append(d_data['Position'])
-                    
+
             except Exception as e:
                 print(f"跳過第 {race_event['RoundNumber']} 站: {e}")
                 continue
@@ -358,7 +360,7 @@ class PreRacePredictor:
         """
         print(f"正在下載 {year} 賽季數據以訓練預測模型...")
         X, y = self.prepare_historical_data(year)
-        
+
         if len(X) > 0:
             self.model.fit(X, y)
             self.is_trained = True
@@ -375,28 +377,28 @@ class PreRacePredictor:
             return "Model not trained"
 
         predictions = []
-        
+
         for driver in qualifying_results:
             # 根據我們訓練時的特徵順序來準備數據
             # [GridPosition, TeamStrength, CurrentPoints]
-            
+
             # 簡單轉換車隊實力分數 (模擬)
             team_map = {'Red Bull': 1.0, 'Ferrari': 3.0, 'Mercedes': 3.5, 'McLaren': 2.5, 'Aston Martin': 5.0}
             team_score = team_map.get(driver['team'], 10.0)
-            
+
             features = np.array([[
                 driver['grid'],
                 team_score,
                 driver['points']
             ]])
-            
+
             predicted_pos = self.model.predict(features)[0]
-            
+
             predictions.append({
                 'driver': driver['driver'],
                 'predicted_finish': predicted_pos
             })
-            
+
         # 依照預測名次排序 (越小越前面)
         predictions.sort(key=lambda x: x['predicted_finish'])
         return predictions

@@ -540,7 +540,7 @@ class F1ReplayWindow(arcade.Window):
 def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
                       playback_speed=1.0, driver_colors=None):
     """Run the F1 replay visualization."""
-    window = F1ReplayWindow(
+    F1ReplayWindow(
         frames=frames,
         track_statuses=track_statuses,
         example_lap=example_lap,
