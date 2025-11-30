@@ -1,5 +1,18 @@
 # F1_strategies
 
+## Troubleshooting
+
+### ModuleNotFoundError: No module named 'plotly'
+
+If you see this error when running the application:
+```
+ModuleNotFoundError: No module named 'plotly'
+```
+
+This means the required Python packages are not installed. The application depends on several packages (like `plotly`, `streamlit`, `fastf1`, etc.) listed in `requirements.txt`. You must install these dependencies before running the app.
+
+**Solution:** Run `pip install -r requirements.txt` to install all required packages.
+
 ## Installation
 
 1. Clone the repository:
