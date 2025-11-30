@@ -2,14 +2,14 @@ import os
 import fastf1
 
 
-CACHE_DIR = 'cache'
+CACHE_DIR = "cache"
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 
 fastf1.Cache.enable_cache(CACHE_DIR)
 
 
-def load_race_data(year, grandprix, session_type='R'):
+def load_race_data(year, grandprix, session_type="R"):
     """
     載入指定比賽的數據
     Load data for the specified race
