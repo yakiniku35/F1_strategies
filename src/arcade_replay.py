@@ -25,7 +25,7 @@ SCREEN_HEIGHT = 1080
 SCREEN_TITLE = "F1 Race Replay with ML Prediction"
 
 # UI Layout Constants
-LEADERBOARD_WIDTH = 280
+LEADERBOARD_WIDTH = 360  # Increased from 280 to fit interval and time columns
 LEADERBOARD_PADDING = 15
 HUD_PANEL_WIDTH = 250
 HUD_PANEL_HEIGHT = 180
@@ -642,6 +642,16 @@ class F1ReplayWindow(arcade.Window):
                     arcade.color.WHITE, 16, bold=True,
                     anchor_x="left", anchor_y="top").draw()
 
+        # Race time (from frame metadata if available)
+        race_time = frame.get("time", 0)
+        time_mins = int(race_time // 60)
+        time_secs = int(race_time % 60)
+        time_text = f"⏱ {time_mins:02d}:{time_secs:02d}"
+        arcade.Text(time_text,
+                    leaderboard_x + LEADERBOARD_WIDTH - 10, leaderboard_y - 12,
+                    arcade.color.YELLOW, 14, bold=True,
+                    anchor_x="right", anchor_y="top").draw()
+
         # Prepare driver list
         driver_list = []
         for code, pos in frame["drivers"].items():
@@ -651,9 +661,10 @@ class F1ReplayWindow(arcade.Window):
         # Sort by distance (race position)
         driver_list.sort(key=lambda x: x[2].get("dist", 999), reverse=True)
 
-        # Get leader distance for gap calculation
+        # Get leader distance and speed for gap/interval calculation
         if driver_list:
             leader_dist = driver_list[0][2].get("dist", 0)
+            leader_speed = driver_list[0][2].get("speed", 1)
 
         self.leaderboard_rects = []
 
@@ -691,19 +702,55 @@ class F1ReplayWindow(arcade.Window):
             is_out = pos.get("rel_dist", 0) == 1
             text_color = arcade.color.GRAY if is_out else arcade.color.WHITE
 
-            driver_text = f"{code}" + (" OUT" if is_out else "")
+            driver_text = f"{code}"
             arcade.Text(driver_text,
                         left_x + 40, top_y - row_height / 2 + 2,
                         text_color, 13, bold=True,
                         anchor_x="left", anchor_y="center").draw()
 
-            # Gap to leader
-            if i > 0 and not is_out:
-                gap = leader_dist - pos.get("dist", 0)
-                gap_text = f"+{gap / 1000:.1f}km" if gap > 1000 else f"+{gap:.0f}m"
+            # Calculate interval (to car ahead) and gap (to leader)
+            if is_out:
+                # Show OUT status
+                arcade.Text("OUT",
+                            right_x - 105, top_y - row_height / 2 + 2,
+                            arcade.color.RED, 10, bold=True,
+                            anchor_x="right", anchor_y="center").draw()
+            elif i == 0:
+                # Leader - show "Leader"
+                arcade.Text("Leader",
+                            right_x - 105, top_y - row_height / 2 + 2,
+                            arcade.color.GREEN, 9,
+                            anchor_x="right", anchor_y="center").draw()
+            else:
+                # Calculate interval to car ahead
+                car_ahead_dist = driver_list[i-1][2].get("dist", 0)
+                current_dist = pos.get("dist", 0)
+                interval_dist = car_ahead_dist - current_dist
+                
+                # Estimate time interval based on average speed (approximate)
+                avg_speed = (driver_list[i-1][2].get("speed", 1) + pos.get("speed", 1)) / 2
+                if avg_speed > 1:  # Avoid division by zero
+                    interval_time = (interval_dist / 1000) / (avg_speed / 3600)  # Convert to seconds
+                    interval_text = f"+{interval_time:.1f}s"
+                else:
+                    interval_text = f"+{interval_dist / 1000:.2f}km"
+                
+                arcade.Text(interval_text,
+                            right_x - 105, top_y - row_height / 2 + 2,
+                            arcade.color.LIGHT_YELLOW, 9,
+                            anchor_x="right", anchor_y="center").draw()
+
+                # Gap to leader
+                gap = leader_dist - current_dist
+                if leader_speed > 1:
+                    gap_time = (gap / 1000) / (leader_speed / 3600)
+                    gap_text = f"+{gap_time:.1f}s"
+                else:
+                    gap_text = f"+{gap / 1000:.1f}km"
+                
                 arcade.Text(gap_text,
-                            right_x - 60, top_y - row_height / 2 + 2,
-                            arcade.color.LIGHT_GRAY, 10,
+                            right_x - 48, top_y - row_height / 2 + 2,
+                            arcade.color.LIGHT_GRAY, 9,
                             anchor_x="right", anchor_y="center").draw()
 
             # Tyre icon
