@@ -271,7 +271,8 @@ def get_race_data(session, refresh_data=False):
     try:
         track_status = session.track_status
         for status in track_status.to_dict('records'):
-            seconds = timedelta.total_seconds(status['Time'])
+            # status['Time'] is a timedelta object from pandas
+            seconds = status['Time'].total_seconds()
             start_time = seconds - global_t_min
             
             if formatted_track_statuses:
@@ -546,7 +547,8 @@ def get_race_telemetry(session, refresh_data=False):
     try:
         track_status = session.track_status
         for status in track_status.to_dict('records'):
-            seconds = timedelta.total_seconds(status['Time'])
+            # status['Time'] is a timedelta object from pandas
+            seconds = status['Time'].total_seconds()
             start_time = seconds - global_t_min
 
             if formatted_track_statuses:

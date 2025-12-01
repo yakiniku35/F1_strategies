@@ -9,7 +9,7 @@ Usage:
     python main.py                          # Interactive mode
     python main.py --predict --year 2025 --gp Monaco
     python main.py --replay --year 2024 --gp Monaco
-    python main.py --replay --year 2024 --gp Monaco --optimized  # Use NumPy arrays
+    python main.py --replay --year 2024 --gp Monaco --legacy  # Use legacy format
 """
 
 import sys
@@ -284,7 +284,7 @@ Examples:
     python main.py                              # Interactive mode
     python main.py --predict --year 2025 --gp Monaco
     python main.py --replay --year 2024 --gp Monaco
-    python main.py --replay --year 2024 --gp Monaco --optimized
+    python main.py --replay --year 2024 --gp Monaco --legacy  # Use legacy format
     python main.py --schedule
         """
     )
@@ -305,10 +305,8 @@ Examples:
                         help='Initial playback speed (default: 1.0)')
     parser.add_argument('--no-train', action='store_true',
                         help='Skip ML model training')
-    parser.add_argument('--optimized', action='store_true', default=True,
-                        help='Use optimized NumPy data format (default: True)')
     parser.add_argument('--legacy', action='store_true',
-                        help='Use legacy dictionary-based data format')
+                        help='Use legacy dictionary-based data format instead of optimized NumPy format')
 
     return parser.parse_args()
 
@@ -347,8 +345,8 @@ def main():
     """Main entry point."""
     args = parse_args()
     
-    # Determine whether to use optimized format
-    use_optimized = args.optimized and not args.legacy
+    # Use optimized format by default, unless --legacy is specified
+    use_optimized = not args.legacy
 
     # Handle command line mode
     if args.schedule:

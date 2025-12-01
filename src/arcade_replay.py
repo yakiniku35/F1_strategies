@@ -42,6 +42,9 @@ HUD_LINE_HEIGHT = 30
 HUD_SECTION_GAP = 45
 ML_INSIGHT_MAX_LENGTH = 55
 
+# Car rendering constants
+CAR_RADIUS = 8  # Radius of car circles on track
+
 # Track status color mapping
 STATUS_COLORS = {
     "GREEN": (150, 150, 150),
@@ -225,7 +228,7 @@ class F1ReplayWindow(arcade.Window):
         for code in self.drivers:
             color = self.driver_colors.get(code, arcade.color.WHITE)
             # Create a simple circular sprite for each car
-            sprite = arcade.SpriteCircle(8, color)
+            sprite = arcade.SpriteCircle(CAR_RADIUS, color)
             sprite.visible = False  # Start hidden, will be positioned in on_update
             self._car_sprites.append(sprite)
             self._car_sprite_map[code] = sprite
@@ -290,7 +293,7 @@ class F1ReplayWindow(arcade.Window):
             
             sprite = self._car_sprite_map[code]
             
-            # Hide cars that are out
+            # Hide cars that are out (rel_dist == 1 indicates car retired/DNF)
             if pos.get("rel_dist", 0) == 1:
                 sprite.visible = False
                 continue
@@ -475,12 +478,13 @@ class F1ReplayWindow(arcade.Window):
         
         # Draw car outlines and labels (these still need individual calls)
         for code, pos in frame["drivers"].items():
+            # rel_dist == 1 indicates car retired/DNF
             if pos.get("rel_dist", 0) == 1:
                 continue
             sx, sy = self.world_to_screen(pos["x"], pos["y"])
 
             # Draw car outline
-            arcade.draw_circle_outline(sx, sy, 8, arcade.color.WHITE, 2)
+            arcade.draw_circle_outline(sx, sy, CAR_RADIUS, arcade.color.WHITE, 2)
 
             # Draw driver code label for selected driver or top 3
             position = pos.get("position", 99)

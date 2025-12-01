@@ -115,6 +115,7 @@ class RaceTrendPredictor:
         current_metadata = frame_metadata[current_indices, :]
         
         # Build feature matrix: [position, lap, tyre, speed, gear, drs_active, dist, rel_dist]
+        # DRS values in FastF1: 0/1=Off, 8=Eligible/Ready, 10/12/14=Active (different states)
         drs_active = np.where(
             np.isin(current_data[:, FIELD_DRS].astype(int), [10, 12, 14]),
             1.0, 0.0
