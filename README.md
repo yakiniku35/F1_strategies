@@ -92,27 +92,29 @@ The ML model trains on race data during initialization and provides real-time in
 
 ```
 F1_strategies/
-├── main.py                 # Entry point
+├── main.py                 # Main entry point (interactive mode)
+├── run_integrated.py       # Integration pipeline entry point
 ├── src/
-│   ├── arcade_replay.py    # Visualization and UI logic
+│   ├── arcade_replay.py    # Arcade visualization and UI
 │   ├── f1_data.py          # Telemetry loading and processing
 │   ├── ml_predictor.py     # Machine learning predictions
+│   ├── dashboard/
+│   │   ├── prediction_overlay.py  # ML prediction overlay
+│   │   └── tables.py       # Data tables generation
+│   ├── integration/
+│   │   └── pipeline.py     # Full analysis pipeline
+│   ├── simulation/
+│   │   ├── race_simulator.py      # Race simulation
+│   │   ├── future_race_data.py    # Future race data provider
+│   │   └── track_layouts.py       # Track layout manager
 │   └── lib/
 │       └── tyres.py        # Tyre compound utilities
 ├── images/
 │   └── tyres/              # Tyre compound icons
-├── resources/              # Background images
-├── computed_data/          # Cached telemetry data
+├── data/
+│   └── track_layouts/      # Cached track layouts
 └── requirements.txt
 ```
-
-## Legacy Streamlit Version
-
-The original Streamlit-based version files are still available:
-- `app.py` - Streamlit application (deprecated)
-- `utils.py` - Legacy utilities
-- `data_loader.py` - Legacy data loader
-- `llm_helper.py` - LLM helper functions
 
 ## Troubleshooting
 
