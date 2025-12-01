@@ -9,6 +9,7 @@ from typing import Optional
 
 from src.simulation.future_race_data import FutureRaceDataProvider
 from src.simulation.track_layouts import TrackLayoutManager
+from src.f1_data import INTERPOLATION_FACTOR
 
 
 class PredictedRaceSimulator:
@@ -421,14 +422,8 @@ class PredictedRaceSimulator:
         # Create example lap dataframe for track rendering
         example_lap = self.track_manager.create_example_lap_dataframe(track_layout)
 
-        # Generate track status (all green for predicted race)
-        track_statuses = [
-            {
-                "status": "1",
-                "start_time": 0,
-                "end_time": None,
-            }
-        ]
+        # Generate track status with possible incidents (yellow flags, safety cars, etc.)
+        track_statuses = self._generate_race_incidents(total_laps, frames_per_lap)
 
         return {
             "frames": frames,
@@ -461,6 +456,143 @@ class PredictedRaceSimulator:
             colors[driver["code"]] = team_colors.get(team, (200, 200, 200))
 
         return colors
+
+    def _generate_race_incidents(self, total_laps: int, frames_per_lap: int) -> list:
+        """
+        Generate realistic race incidents (yellow flags, safety cars, VSC, red flags).
+        
+        Args:
+            total_laps: Total number of laps in the race
+            frames_per_lap: Number of frames per lap
+            
+        Returns:
+            List of track status dictionaries with timing
+        """
+        import random
+        import time
+        
+        # Use time-based seed for variation
+        random.seed(int(time.time() * 1000) % (2**32))
+        
+        track_statuses = []
+        current_time = 0
+        
+        # Start with green flag
+        track_statuses.append({
+            "status": "1",  # Green
+            "start_time": 0,
+            "end_time": None  # Will be set if incident occurs
+        })
+        
+        # Probability of incidents based on race length
+        # Typical F1 race: 15-30% chance of safety car, 5-10% chance of VSC, <2% red flag
+        incident_probability = {
+            'safety_car': 0.20,     # 20% chance of at least one SC
+            'vsc': 0.08,            # 8% chance of VSC
+            'yellow': 0.12,         # 12% chance of yellow flag
+            'red_flag': 0.02,       # 2% chance of red flag
+        }
+        
+        # Decide incidents for this race
+        has_safety_car = random.random() < incident_probability['safety_car']
+        has_vsc = random.random() < incident_probability['vsc']
+        has_yellow = random.random() < incident_probability['yellow']
+        has_red_flag = random.random() < incident_probability['red_flag']
+        
+        incidents = []
+        
+        # Generate Safety Car incidents
+        if has_safety_car:
+            num_sc = random.randint(1, 2)  # 1-2 safety car periods
+            for _ in range(num_sc):
+                # SC usually happens mid-race
+                sc_lap = random.randint(int(total_laps * 0.2), int(total_laps * 0.8))
+                sc_duration_laps = random.randint(2, 5)  # 2-5 laps
+                incidents.append({
+                    'type': '4',  # Safety Car
+                    'lap': sc_lap,
+                    'duration_laps': sc_duration_laps
+                })
+        
+        # Generate VSC incidents
+        if has_vsc:
+            num_vsc = random.randint(1, 2)
+            for _ in range(num_vsc):
+                vsc_lap = random.randint(int(total_laps * 0.15), int(total_laps * 0.9))
+                vsc_duration_laps = random.randint(1, 3)  # 1-3 laps
+                incidents.append({
+                    'type': '6',  # VSC
+                    'lap': vsc_lap,
+                    'duration_laps': vsc_duration_laps
+                })
+        
+        # Generate Yellow Flag incidents  
+        if has_yellow:
+            num_yellow = random.randint(1, 3)
+            for _ in range(num_yellow):
+                yellow_lap = random.randint(5, total_laps - 5)
+                yellow_duration_laps = random.uniform(0.3, 1.5)  # Short yellow flags
+                incidents.append({
+                    'type': '2',  # Yellow Flag
+                    'lap': yellow_lap,
+                    'duration_laps': yellow_duration_laps
+                })
+        
+        # Generate Red Flag incident (rare)
+        if has_red_flag:
+            red_lap = random.randint(int(total_laps * 0.1), int(total_laps * 0.6))
+            red_duration_laps = random.randint(5, 15)  # Significant stoppage
+            incidents.append({
+                'type': '5',  # Red Flag
+                'lap': red_lap,
+                'duration_laps': red_duration_laps
+            })
+        
+        # Sort incidents by lap
+        incidents.sort(key=lambda x: x['lap'])
+        
+        # Convert lap-based incidents to time-based track statuses
+        for incident in incidents:
+            incident_lap = incident['lap']
+            duration_laps = incident['duration_laps']
+            incident_type = incident['type']
+            
+            # Calculate time in seconds (approximate)
+            start_time = incident_lap * frames_per_lap / INTERPOLATION_FACTOR
+            end_time = start_time + (duration_laps * frames_per_lap / INTERPOLATION_FACTOR)
+            
+            # Close previous green period
+            if track_statuses[-1]['end_time'] is None:
+                track_statuses[-1]['end_time'] = start_time
+            
+            # Add incident period
+            track_statuses.append({
+                "status": incident_type,
+                "start_time": start_time,
+                "end_time": end_time
+            })
+            
+            # Add VSC ending if it was VSC
+            if incident_type == '6':
+                track_statuses.append({
+                    "status": "7",  # VSC Ending
+                    "start_time": end_time,
+                    "end_time": end_time + 10  # Short VSC ending period
+                })
+                end_time += 10
+            
+            # Resume green flag after incident
+            track_statuses.append({
+                "status": "1",  # Green
+                "start_time": end_time,
+                "end_time": None
+            })
+        
+        # Close the last status at race end
+        if track_statuses[-1]['end_time'] is None:
+            track_statuses[-1]['end_time'] = total_laps * frames_per_lap / INTERPOLATION_FACTOR
+        
+        return track_statuses
 
     def get_prediction_confidence(self) -> dict:
         """
