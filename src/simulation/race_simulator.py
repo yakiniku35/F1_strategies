@@ -26,6 +26,11 @@ class PredictedRaceSimulator:
     SPEED_VARIATION_MIN = -20
     SPEED_VARIATION_MAX = 20
 
+    # Stable speed variation for smoother animation
+    STABLE_SPEED_VARIATION_MIN = -10
+    STABLE_SPEED_VARIATION_MAX = 10
+    FRAME_SPEED_VARIATION = 5  # Small per-frame variation
+
     # Pit stop strategy constants
     ONE_STOP_WINDOW_MIN = 0.30
     ONE_STOP_WINDOW_MAX = 0.50
@@ -335,6 +340,9 @@ class PredictedRaceSimulator:
             # Stagger starting positions - cars start at different points based on grid
             driver_base_offsets[code] = (quali["grid"] - 1) * 0.02
 
+        # Pre-compute qualifying grid map for O(1) lookup
+        qualifying_grid_map = {q["code"]: q["grid"] for q in qualifying}
+
         # Pre-compute stable speed values per lap per driver to avoid random jumps
         driver_lap_speeds = {}
         driver_lap_gears = {}
@@ -344,7 +352,7 @@ class PredictedRaceSimulator:
                 key = (code, lap)
                 # Set stable speed and gear for entire lap with only slight variation
                 driver_lap_speeds[key] = self.BASE_SPEED + random.uniform(
-                    self.SPEED_VARIATION_MIN / 2, self.SPEED_VARIATION_MAX / 2)
+                    self.STABLE_SPEED_VARIATION_MIN, self.STABLE_SPEED_VARIATION_MAX)
                 driver_lap_gears[key] = random.randint(4, 7)
 
         for lap_idx, lap_result in enumerate(lap_results):
@@ -362,7 +370,7 @@ class PredictedRaceSimulator:
                     # Base offset separates cars, progress moves them around track
                     base_offset = driver_base_offsets.get(code, 0)
                     # Adjust offset by position difference from grid to create overtaking effect
-                    quali_pos = next((q["grid"] for q in qualifying if q["code"] == code), position)
+                    quali_pos = qualifying_grid_map.get(code, position)
                     position_adjustment = (quali_pos - position) * 0.005  # Small adjustment for overtakes
                     
                     # Track progress: combines lap progress with position-based offset
@@ -386,7 +394,8 @@ class PredictedRaceSimulator:
                     base_gear = driver_lap_gears.get(speed_key, 5)
                     
                     # Add small per-frame variation for realism (but much smaller than before)
-                    frame_speed = base_speed + random.uniform(-5, 5)
+                    frame_speed = base_speed + random.uniform(
+                        -self.FRAME_SPEED_VARIATION, self.FRAME_SPEED_VARIATION)
                     
                     frame_drivers[code] = {
                         "x": x,

@@ -978,17 +978,15 @@ class F1ReplayWindow(arcade.Window):
         elif symbol == arcade.key.T:
             self.prediction_overlay.toggle_tables()
         elif symbol == arcade.key.C:
-            # Toggle chat panel
-            if self.chat_input_active:
-                # If typing, C key goes to input
-                self.chat_input += 'c'
-            else:
+            # Toggle chat panel (only when not actively typing)
+            if not self.chat_input_active:
                 self.show_chat_panel = not self.show_chat_panel
                 if self.show_chat_panel:
                     self.chat_input_active = True
                     self.paused = True  # Pause when chat is open
                 else:
                     self.chat_input_active = False
+            # Note: 'c' character input is handled by on_text
         elif symbol == arcade.key.ESCAPE:
             if self.show_chat_panel:
                 # Close chat panel
@@ -1005,9 +1003,12 @@ class F1ReplayWindow(arcade.Window):
     def on_text(self, text: str):
         """Handle text input for chat."""
         if self.chat_input_active and self.show_chat_panel:
-            # Only allow printable characters
-            if text.isprintable() and len(self.chat_input) < 200:
-                self.chat_input += text
+            # Allow alphanumeric, spaces, and common punctuation for chat input
+            # Exclude control characters and newlines for single-line input
+            allowed_chars = set(' .,!?-\'":;()[]{}@#$%&*+=/<>~`')
+            if len(self.chat_input) < 200:
+                if text.isalnum() or text in allowed_chars:
+                    self.chat_input += text
 
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
         """Handle mouse click for driver selection."""

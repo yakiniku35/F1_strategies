@@ -100,7 +100,8 @@ Always be helpful and enthusiastic about F1."""
                 
                 standings = self.race_context.get("standings", {})
                 if standings:
-                    top_3 = list(standings.items())[:3]
+                    # Sort by position value to get actual top 3
+                    top_3 = sorted(standings.items(), key=lambda x: x[1])[:3]
                     if top_3:
                         standings_str = ", ".join([f"P{v}: {k}" for k, v in top_3])
                         context_msg += f"\n[Current standings: {standings_str}]"
