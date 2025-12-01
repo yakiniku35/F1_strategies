@@ -10,6 +10,9 @@ cache/
 # Computed telemetry data (can be regenerated)
 computed_data/
 
+# Output directory for generated tables
+output/
+
 # C extensions
 *.so
 

@@ -7,9 +7,11 @@ Extended with ML prediction capabilities.
 import os
 import arcade
 import numpy as np
+from typing import Optional
 from src.f1_data import FPS
 from src.ml_predictor import RaceTrendPredictor
 from src.lib.tyres import get_tyre_compound_str
+from src.dashboard.prediction_overlay import PredictionOverlay
 
 # Default screen dimensions
 SCREEN_WIDTH = 1920
@@ -68,7 +70,7 @@ class F1ReplayWindow(arcade.Window):
     """Main F1 Replay Window with ML prediction integration."""
 
     def __init__(self, frames, track_statuses, example_lap, drivers, title,
-                 playback_speed=1.0, driver_colors=None):
+                 playback_speed=1.0, driver_colors=None, predictions: Optional[dict] = None):
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
 
         self.frames = frames
@@ -122,6 +124,10 @@ class F1ReplayWindow(arcade.Window):
         self.ml_insights = ["Initializing ML prediction system..."]
         self.ml_trained = False
         self.show_ml_panel = True
+
+        # Prediction overlay
+        self.prediction_overlay = PredictionOverlay(predictions)
+        self.external_predictions = predictions or {}
 
         # Train ML model with race data
         self._train_ml_model()
@@ -238,9 +244,13 @@ class F1ReplayWindow(arcade.Window):
         # --- UI ELEMENTS ---
         self._draw_hud(frame, current_time, current_track_status)
         self._draw_leaderboard(frame)
+        self._draw_prediction_overlay(frame)
         self._draw_controls_legend()
         self._draw_selected_driver_info(frame)
         self._draw_ml_panel(frame)
+
+        # Draw tables view (on top of everything when active)
+        self.prediction_overlay.draw_tables_view(self.width, self.height, frame)
 
     def _draw_hud(self, frame, current_time, track_status):
         """Draw heads-up display (lap, time, flags)."""
@@ -349,16 +359,60 @@ class F1ReplayWindow(arcade.Window):
                 rect = arcade.XYWH(tyre_icon_x, tyre_icon_y, icon_size, icon_size)
                 arcade.draw_texture_rect(rect=rect, texture=tyre_texture, angle=0, alpha=255)
 
+    def _draw_prediction_overlay(self, frame):
+        """Draw prediction overlay elements on the leaderboard."""
+        if not self.prediction_overlay.show_overlay:
+            return
+
+        # Update predictions from ML model if available
+        if self.ml_trained and int(self.frame_index) % 25 == 0:
+            live_predictions = self.ml_predictor.predict_all_drivers(frame)
+            if live_predictions:
+                # Merge with external predictions
+                merged = {**self.external_predictions, **live_predictions}
+                self.prediction_overlay.update_predictions(merged)
+
+        # Draw overlay for each leaderboard entry
+        leaderboard_x = self.width - 220
+        leaderboard_y = self.height - 40
+        row_height = 25
+        overlay_x = self.width - 55
+
+        driver_list = []
+        for code, pos in frame["drivers"].items():
+            driver_list.append((code, pos))
+        driver_list.sort(key=lambda x: x[1].get("dist", 999), reverse=True)
+
+        for i, (code, pos) in enumerate(driver_list):
+            top_y = leaderboard_y - 30 - (i * row_height)
+
+            # Draw trend indicator
+            self.prediction_overlay.draw_leaderboard_overlay(
+                overlay_x, top_y, code, row_height
+            )
+
+            # Draw pit window indicator
+            current_lap = pos.get('lap', 1)
+            self.prediction_overlay.draw_pit_window_indicator(
+                self.width - 75, top_y - 12, code, current_lap
+            )
+
+            # Draw battle highlight on car position
+            if code in frame["drivers"]:
+                sx, sy = self.world_to_screen(pos["x"], pos["y"])
+                self.prediction_overlay.draw_battle_highlight(sx, sy, code)
+
     def _draw_controls_legend(self):
         """Draw controls legend at bottom left."""
         legend_x = 20
-        legend_y = 150
+        legend_y = 175
         legend_lines = [
             "Controls:",
             "[SPACE]  Pause/Resume",
             "[←/→]    Rewind / FastForward",
             "[↑/↓]    Speed +/- (0.5x, 1x, 2x, 4x)",
             "[M]      Toggle ML Panel",
+            "[T]      Toggle Tables View",
         ]
 
         for i, line in enumerate(legend_lines):
@@ -522,6 +576,8 @@ class F1ReplayWindow(arcade.Window):
             self.playback_speed = 4.0
         elif symbol == arcade.key.M:
             self.show_ml_panel = not self.show_ml_panel
+        elif symbol == arcade.key.T:
+            self.prediction_overlay.toggle_tables()
 
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
         """Handle mouse click for driver selection."""
@@ -538,8 +594,19 @@ class F1ReplayWindow(arcade.Window):
 
 
 def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
-                      playback_speed=1.0, driver_colors=None):
-    """Run the F1 replay visualization."""
+                      playback_speed=1.0, driver_colors=None, predictions=None):
+    """Run the F1 replay visualization.
+
+    Args:
+        frames: Race telemetry frames
+        track_statuses: Track status data
+        example_lap: Example lap for track geometry
+        drivers: List of driver codes
+        title: Window title
+        playback_speed: Initial playback speed multiplier
+        driver_colors: Dictionary mapping driver codes to RGB colors
+        predictions: Optional dictionary of ML predictions
+    """
     F1ReplayWindow(
         frames=frames,
         track_statuses=track_statuses,
@@ -547,6 +614,7 @@ def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
         drivers=drivers,
         playback_speed=playback_speed,
         driver_colors=driver_colors,
-        title=title
+        title=title,
+        predictions=predictions
     )
     arcade.run()
