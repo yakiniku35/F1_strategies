@@ -15,7 +15,7 @@ import numpy as np
 from src.lib.tyres import get_tyre_compound_int
 
 # Frame rate for replay
-FPS = 60  # Increased from 25 to 60 for smoother animation
+FPS = 120  # Ultra-smooth animation - increased from 60
 DT = 1 / FPS
 
 # Field indices for the NumPy 3D driver data array
