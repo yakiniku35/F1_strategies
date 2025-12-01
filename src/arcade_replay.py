@@ -242,13 +242,13 @@ class F1ReplayWindow(arcade.Window):
         
         # Create line strips for inner and outer track edges
         if len(self.screen_inner_points) > 1:
-            inner_line = arcade.create_line_strip(
+            inner_line = arcade.shape_list.create_line_strip(
                 self.screen_inner_points, track_color, 3
             )
             self._track_shapes.append(inner_line)
         
         if len(self.screen_outer_points) > 1:
-            outer_line = arcade.create_line_strip(
+            outer_line = arcade.shape_list.create_line_strip(
                 self.screen_outer_points, track_color, 3
             )
             self._track_shapes.append(outer_line)
