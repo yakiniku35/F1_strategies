@@ -185,7 +185,7 @@ class F1ReplayWindow(arcade.Window):
         self.leaderboard_rects = []
 
         # Batch rendering - Static track shapes (regenerated only when track status changes)
-        self._track_shapes: Optional[arcade.ShapeElementList] = None
+        self._track_shapes: Optional[arcade.shape_list.ShapeElementList] = None
         self._last_track_status = None  # Track the last status to detect changes
 
         # Batch rendering - Car sprites
@@ -238,7 +238,7 @@ class F1ReplayWindow(arcade.Window):
         
         Only regenerate when track status (color) changes.
         """
-        self._track_shapes = arcade.ShapeElementList()
+        self._track_shapes = arcade.shape_list.ShapeElementList()
         
         # Create line strips for inner and outer track edges
         if len(self.screen_inner_points) > 1:
