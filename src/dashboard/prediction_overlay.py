@@ -6,6 +6,10 @@ Visualizes ML prediction results on the race simulation.
 import arcade
 from typing import Optional
 
+# Tables view layout constants
+TABLES_BACKGROUND_WIDTH_RATIO = 0.8
+TABLES_BACKGROUND_HEIGHT_RATIO = 0.8
+
 
 class PredictionOverlay:
     """
@@ -243,8 +247,8 @@ class PredictionOverlay:
         bg_rect = arcade.XYWH(
             screen_width / 2,
             screen_height / 2,
-            screen_width * 0.8,
-            screen_height * 0.8
+            screen_width * TABLES_BACKGROUND_WIDTH_RATIO,
+            screen_height * TABLES_BACKGROUND_HEIGHT_RATIO
         )
         arcade.draw_rect_filled(bg_rect, (20, 20, 30, 230))
         arcade.draw_rect_outline(bg_rect, arcade.color.CYAN, 2)

@@ -251,7 +251,8 @@ def export_to_csv(table_data: str, filepath: str) -> bool:
                 csv_content.append(','.join(cells))
 
         # Ensure directory exists
-        os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
+        output_dir = os.path.dirname(filepath) or '.'
+        os.makedirs(output_dir, exist_ok=True)
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('\n'.join(csv_content))
@@ -277,7 +278,8 @@ def export_to_json(predictions: dict, filepath: str) -> bool:
     """
     try:
         # Ensure directory exists
-        os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
+        output_dir = os.path.dirname(filepath) or '.'
+        os.makedirs(output_dir, exist_ok=True)
 
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(predictions, f, indent=2, default=str)
