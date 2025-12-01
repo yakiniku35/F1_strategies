@@ -469,6 +469,12 @@ class PredictedRaceSimulator:
         Returns:
             Dictionary with confidence metrics
         """
+        import random
+        import time
+        
+        # Use time-based seed for variation
+        random.seed(int(time.time() * 1000) % (2**32))
+        
         qualifying = self.get_qualifying_results()
 
         confidences = {}
@@ -480,7 +486,10 @@ class PredictedRaceSimulator:
             position_factor = max(0.5, 1 - i * 0.03)
             team_factor = max(0.5, 1 - (team_strength - 1) * 0.08)
 
-            confidence = min(0.95, position_factor * team_factor)
+            # Add random variation to confidence (±5%)
+            random_variation = random.uniform(-0.05, 0.05)
+            
+            confidence = min(0.95, max(0.50, position_factor * team_factor + random_variation))
             confidences[code] = round(confidence, 2)
 
         return confidences

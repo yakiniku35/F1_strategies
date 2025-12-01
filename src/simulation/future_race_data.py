@@ -485,6 +485,10 @@ class FutureRaceDataProvider:
             List of drivers in estimated qualifying order
         """
         import random
+        import time
+        
+        # Use time-based seed for variation between runs
+        random.seed(int(time.time() * 1000) % (2**32))
 
         qualifying = []
         for driver in self.DRIVERS_2025:
@@ -495,8 +499,9 @@ class FutureRaceDataProvider:
             # Team strength has major impact, driver points add variation
             base_score = team_strength * 10 - (driver_points / 50)
 
-            # Add random variation (simulating form, conditions)
-            variation = random.uniform(-2, 2)
+            # Add significant random variation to create different outcomes
+            # Increased from (-2, 2) to (-5, 5) for more variation
+            variation = random.uniform(-5, 5)
             final_score = base_score + variation
 
             qualifying.append({
