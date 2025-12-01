@@ -11,7 +11,7 @@ import arcade
 import numpy as np
 from typing import Optional, Union, List
 from src.f1_data import (
-    FPS, FIELD_X, FIELD_Y, FIELD_DIST, FIELD_REL_DIST, FIELD_LAP,
+    FPS, INTERPOLATION_FACTOR, FIELD_X, FIELD_Y, FIELD_DIST, FIELD_REL_DIST, FIELD_LAP,
     FIELD_TYRE, FIELD_SPEED, FIELD_GEAR, FIELD_DRS, FIELD_POSITION
 )
 from src.ml_predictor import RaceTrendPredictor
@@ -1149,7 +1149,8 @@ class F1ReplayWindow(arcade.Window):
         """Update game state."""
         if self.paused:
             return
-        self.frame_index += delta_time * FPS * self.playback_speed
+        # Account for interpolation factor when updating frame index
+        self.frame_index += delta_time * FPS * INTERPOLATION_FACTOR * self.playback_speed
         if self.frame_index >= self.n_frames:
             self.frame_index = float(self.n_frames - 1)
 

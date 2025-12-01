@@ -15,8 +15,11 @@ import numpy as np
 from src.lib.tyres import get_tyre_compound_int
 
 # Frame rate for replay
-FPS = 120  # Ultra-smooth animation - increased from 60
+FPS = 25  # Display frame rate (frames per second during playback)
 DT = 1 / FPS
+
+# Interpolation multiplier for smoother data
+INTERPOLATION_FACTOR = 4  # Generate 4x more frames for ultra-smooth animation
 
 # Field indices for the NumPy 3D driver data array
 # Array structure: (n_frames, n_drivers, n_fields)
@@ -216,8 +219,10 @@ def get_race_data(session, refresh_data=False):
         global_t_min = t_min if global_t_min is None else min(global_t_min, t_min)
         global_t_max = t_max if global_t_max is None else max(global_t_max, t_max)
     
-    # 2. Create a timeline (start from zero)
-    timeline = np.arange(global_t_min, global_t_max, DT) - global_t_min
+    # 2. Create a timeline with interpolation for smooth animation
+    # Using smaller time steps for more frames
+    interpolated_dt = DT / INTERPOLATION_FACTOR
+    timeline = np.arange(global_t_min, global_t_max, interpolated_dt) - global_t_min
     n_frames = len(timeline)
     
     # Get sorted driver codes for consistent ordering
