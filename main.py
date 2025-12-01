@@ -23,7 +23,9 @@ logging.basicConfig(
     format='%(message)s'
 )
 # Suppress FastF1 and other library logs
-logging.getLogger('fastf1').setLevel(logging.WARNING)
+logging.getLogger('fastf1').setLevel(logging.ERROR)  # Changed to ERROR to suppress INFO
+logging.getLogger('fastf1.core').setLevel(logging.ERROR)
+logging.getLogger('fastf1.req').setLevel(logging.ERROR)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 

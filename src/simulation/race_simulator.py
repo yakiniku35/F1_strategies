@@ -493,7 +493,7 @@ class PredictedRaceSimulator:
         example_lap = self.track_manager.create_example_lap_dataframe(track_layout)
 
         # Generate track status with possible incidents (yellow flags, safety cars, etc.)
-        track_statuses = self._generate_race_incidents(total_laps, frames_per_lap)
+        track_statuses = self._generate_race_incidents(total_laps, self.FRAMES_PER_LAP)
 
         return {
             "frames": frames,
