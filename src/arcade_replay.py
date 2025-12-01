@@ -233,10 +233,9 @@ class F1ReplayWindow(arcade.Window):
 
         # 1. Draw Background
         if self.bg_texture:
-            arcade.draw_lrbt_rectangle_textured(
-                left=0, right=self.width,
-                bottom=0, top=self.height,
-                texture=self.bg_texture
+            arcade.draw_texture_rect(
+                texture=self.bg_texture,
+                rect=arcade.LBWH(0, 0, self.width, self.height)
             )
 
         # 2. Get current frame data
@@ -275,7 +274,7 @@ class F1ReplayWindow(arcade.Window):
             position = pos.get("position", 99)
             if code == self.selected_driver or position <= 3:
                 # Background for label
-                arcade.draw_rectangle_filled(sx, sy + 18, 28, 14, (0, 0, 0, 180))
+                arcade.draw_rect_filled(arcade.XYWH(sx, sy + 18, 28, 14), (0, 0, 0, 180))
                 arcade.Text(
                     code,
                     sx, sy + 18,
@@ -467,7 +466,7 @@ class F1ReplayWindow(arcade.Window):
                         11, bold=True, anchor_x="center", anchor_y="center").draw()
 
             # Driver code with team color indicator
-            arcade.draw_rectangle_filled(left_x + 30, top_y - row_height / 2 + 2, 4, 16, color)
+            arcade.draw_rect_filled(arcade.XYWH(left_x + 30, top_y - row_height / 2 + 2, 4, 16), color)
 
             # Check if OUT
             is_out = pos.get("rel_dist", 0) == 1
@@ -588,7 +587,7 @@ class F1ReplayWindow(arcade.Window):
         arcade.draw_rect_filled(header_rect, driver_color)
 
         # Team color bar
-        arcade.draw_rectangle_filled(info_x + 8, info_y - 5, 6, 25, (255, 255, 255))
+        arcade.draw_rect_filled(arcade.XYWH(info_x + 8, info_y - 5, 6, 25), (255, 255, 255))
 
         arcade.Text(
             f"  {self.selected_driver}",
