@@ -26,6 +26,11 @@ class PredictedRaceSimulator:
     SPEED_VARIATION_MIN = -20
     SPEED_VARIATION_MAX = 20
 
+    # Stable speed variation for smoother animation
+    STABLE_SPEED_VARIATION_MIN = -10
+    STABLE_SPEED_VARIATION_MAX = 10
+    FRAME_SPEED_VARIATION = 5  # Small per-frame variation
+
     # Pit stop strategy constants
     ONE_STOP_WINDOW_MIN = 0.30
     ONE_STOP_WINDOW_MAX = 0.50
@@ -321,14 +326,6 @@ class PredictedRaceSimulator:
         qualifying = race_prediction["qualifying"]
         lap_results = race_prediction["lap_results"]
 
-        # Initialize driver positions on track
-        driver_track_positions = {}
-        for quali in qualifying:
-            code = quali["code"]
-            # Stagger starting positions
-            offset = (quali["grid"] - 1) * 0.02
-            driver_track_positions[code] = max(0, 1.0 - offset)
-
         # Calculate driver colors (team-based)
         driver_colors = self._get_team_colors()
 
@@ -336,19 +333,48 @@ class PredictedRaceSimulator:
         current_time = 0.0
         dt = 1.0 / self.FPS
 
+        # Store base starting offset for each driver (stagger based on grid position)
+        driver_base_offsets = {}
+        for quali in qualifying:
+            code = quali["code"]
+            # Stagger starting positions - cars start at different points based on grid
+            driver_base_offsets[code] = (quali["grid"] - 1) * 0.02
+
+        # Pre-compute qualifying grid map for O(1) lookup
+        qualifying_grid_map = {q["code"]: q["grid"] for q in qualifying}
+
+        # Pre-compute stable speed values per lap per driver to avoid random jumps
+        driver_lap_speeds = {}
+        driver_lap_gears = {}
+        for lap_result in lap_results:
+            lap = lap_result["lap"]
+            for code in lap_result["positions"].keys():
+                key = (code, lap)
+                # Set stable speed and gear for entire lap with only slight variation
+                driver_lap_speeds[key] = self.BASE_SPEED + random.uniform(
+                    self.STABLE_SPEED_VARIATION_MIN, self.STABLE_SPEED_VARIATION_MAX)
+                driver_lap_gears[key] = random.randint(4, 7)
+
         for lap_idx, lap_result in enumerate(lap_results):
             lap = lap_result["lap"]
             positions = lap_result["positions"]
 
             # Simulate movement through this lap
             for frame_num in range(self.FRAMES_PER_LAP):
-                progress = frame_num / self.FRAMES_PER_LAP
+                # Progress within this lap (0 to 1)
+                lap_progress = frame_num / self.FRAMES_PER_LAP
 
                 frame_drivers = {}
                 for code, position in positions.items():
-                    # Calculate track progress
-                    track_progress = (driver_track_positions[code] + progress) % 1.0
-                    driver_track_positions[code] = track_progress
+                    # Calculate track progress based on lap and frame progress
+                    # Base offset separates cars, progress moves them around track
+                    base_offset = driver_base_offsets.get(code, 0)
+                    # Adjust offset by position difference from grid to create overtaking effect
+                    quali_pos = qualifying_grid_map.get(code, position)
+                    position_adjustment = (quali_pos - position) * 0.005  # Small adjustment for overtakes
+                    
+                    # Track progress: combines lap progress with position-based offset
+                    track_progress = (lap_progress - base_offset + position_adjustment) % 1.0
 
                     # Get x, y from track layout
                     x, y = self.track_manager.interpolate_position(track_layout, track_progress)
@@ -362,17 +388,25 @@ class PredictedRaceSimulator:
 
                     tyre_code = self.COMPOUNDS.get(current_tyre, self.COMPOUNDS["MEDIUM"])["code"]
 
+                    # Use pre-computed stable speed and gear values
+                    speed_key = (code, lap)
+                    base_speed = driver_lap_speeds.get(speed_key, self.BASE_SPEED)
+                    base_gear = driver_lap_gears.get(speed_key, 5)
+                    
+                    # Add small per-frame variation for realism (but much smaller than before)
+                    frame_speed = base_speed + random.uniform(
+                        -self.FRAME_SPEED_VARIATION, self.FRAME_SPEED_VARIATION)
+                    
                     frame_drivers[code] = {
                         "x": x,
                         "y": y,
                         "position": position,
                         "lap": lap,
-                        "dist": lap * 5000 + progress * 5000,  # Approximate distance
+                        "dist": lap * 5000 + lap_progress * 5000,  # Approximate distance
                         "rel_dist": track_progress,
                         "tyre": tyre_code,
-                        "speed": self.BASE_SPEED + random.uniform(
-                            self.SPEED_VARIATION_MIN, self.SPEED_VARIATION_MAX),
-                        "gear": random.randint(3, 8),
+                        "speed": frame_speed,
+                        "gear": base_gear,
                         "drs": 0,
                     }
 

@@ -20,6 +20,9 @@ A Python application for visualizing Formula 1 race telemetry with real-time mac
 | ↑ / ↓ | Increase / Decrease Speed |
 | 1-4 | Set Speed (0.5x, 1x, 2x, 4x) |
 | M | Toggle ML Prediction Panel |
+| T | Toggle Tables View |
+| C | Open AI Chat (ask questions!) 🤖 |
+| ESC | Close chat panel |
 | Click | Select driver on leaderboard |
 
 ## Requirements
@@ -88,6 +91,24 @@ The application includes ML-powered race analysis:
 
 The ML model trains on race data during initialization and provides real-time insights during replay.
 
+## AI Chat Feature 🤖
+
+Press **C** to open the AI Chat panel and ask questions about F1:
+
+- "What's the best tyre strategy?"
+- "Who's likely to win?"
+- "Explain DRS"
+- "What's a good pit window?"
+
+The AI assistant provides context-aware responses based on the current race state.
+
+**Note:** For full AI chat functionality, set your Groq API key:
+```bash
+export GROQ_API_KEY=your_api_key_here
+```
+
+Basic offline Q&A is available without an API key.
+
 ## Project Structure
 
 ```
@@ -98,6 +119,7 @@ F1_strategies/
 │   ├── arcade_replay.py    # Arcade visualization and UI
 │   ├── f1_data.py          # Telemetry loading and processing
 │   ├── ml_predictor.py     # Machine learning predictions
+│   ├── ai_chat.py          # AI chat assistant for Q&A
 │   ├── dashboard/
 │   │   ├── prediction_overlay.py  # ML prediction overlay
 │   │   └── tables.py       # Data tables generation
