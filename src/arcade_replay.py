@@ -1,7 +1,7 @@
 """
 F1 Race Replay with Arcade graphics library.
 Based on f1-race-replay project by Tom Shaw.
-Extended with ML prediction capabilities.
+Extended with ML prediction capabilities and AI chat.
 """
 
 import os
@@ -12,6 +12,7 @@ from src.f1_data import FPS
 from src.ml_predictor import RaceTrendPredictor
 from src.lib.tyres import get_tyre_compound_str
 from src.dashboard.prediction_overlay import PredictionOverlay
+from src.ai_chat import F1AIChat
 
 # Default screen dimensions (1080p for better compatibility)
 SCREEN_WIDTH = 1920
@@ -25,6 +26,11 @@ HUD_PANEL_WIDTH = 250
 HUD_PANEL_HEIGHT = 180
 ML_PANEL_WIDTH = 440
 ML_PANEL_HEIGHT = 200
+
+# Chat UI Constants
+CHAT_PANEL_WIDTH = 500
+CHAT_PANEL_HEIGHT = 400
+CHAT_INPUT_HEIGHT = 40
 
 # HUD Spacing Constants
 HUD_LINE_HEIGHT = 30
@@ -152,12 +158,69 @@ class F1ReplayWindow(arcade.Window):
         self.prediction_overlay = PredictionOverlay(predictions)
         self.external_predictions = predictions or {}
 
+        # AI Chat
+        self.ai_chat = F1AIChat()
+        self.ai_chat.set_race_context(race_info or {}, self.drivers)
+        self.show_chat_panel = False
+        self.chat_input = ""
+        self.chat_messages = []
+        self.chat_input_active = False
+
         # For predicted mode, skip training on frame data
         if self.mode != 'predicted':
             self._train_ml_model()
         else:
             self.ml_insights = ["🔮 Running in prediction mode"]
             self.ml_trained = True
+            # Store last update time for predicted insights
+            self._last_insight_update = 0
+
+    def _generate_predicted_insights(self, frame):
+        """Generate insights for predicted mode based on current frame data."""
+        insights = []
+        lap = frame.get('lap', 1)
+        
+        # Get race info
+        gp_name = self.race_info.get('gp', 'Race')
+        year = self.race_info.get('year', 2025)
+        
+        # Sort drivers by position
+        sorted_drivers = sorted(
+            frame['drivers'].items(),
+            key=lambda x: x[1].get('position', 99)
+        )
+        
+        if len(sorted_drivers) >= 3:
+            leader = sorted_drivers[0]
+            second = sorted_drivers[1]
+            third = sorted_drivers[2]
+            
+            # Leader insight
+            insights.append(f"🏆 {leader[0]} leads the {year} {gp_name}")
+            
+            # Battle for positions
+            if len(sorted_drivers) >= 2:
+                leader_dist = leader[1].get('dist', 0)
+                second_dist = second[1].get('dist', 0)
+                gap = leader_dist - second_dist
+                if gap < 200:
+                    insights.append(f"⚔️ Close battle: {leader[0]} vs {second[0]} for P1!")
+                elif gap < 500:
+                    insights.append(f"🔥 {second[0]} closing in on {leader[0]}")
+            
+            # Podium positions
+            insights.append(f"🥇🥈🥉 Podium: {leader[0]}, {second[0]}, {third[0]}")
+            
+            # Lap progress
+            total_laps = self.race_info.get('total_laps', 50)
+            if lap < total_laps * 0.25:
+                insights.append(f"📊 Lap {lap} - Early race phase")
+            elif lap < total_laps * 0.75:
+                insights.append(f"📊 Lap {lap} - Mid-race, strategy in play")
+            else:
+                insights.append(f"📊 Lap {lap} - Final laps, push to finish!")
+        
+        return insights[:4] if insights else ["🔮 Simulating predicted race..."]
 
     def _load_tyre_textures(self):
         """Load tyre compound textures."""
@@ -294,6 +357,9 @@ class F1ReplayWindow(arcade.Window):
 
         # Draw tables view (on top of everything when active)
         self.prediction_overlay.draw_tables_view(self.width, self.height, frame)
+
+        # Draw chat panel (on top of everything when active)
+        self._draw_chat_panel(frame)
 
     def _draw_hud(self, frame, current_time, track_status):
         """Draw heads-up display (lap, time, flags) with panel background."""
@@ -524,6 +590,7 @@ class F1ReplayWindow(arcade.Window):
             "↑ / ↓  Speed +/-",
             "M      Toggle ML Panel",
             "T      Toggle Tables",
+            "C      AI Chat 🤖",
         ]
 
         panel_width = 180
@@ -707,7 +774,12 @@ class F1ReplayWindow(arcade.Window):
 
         # Update insights periodically
         if int(self.frame_index) % 50 == 0 and self.ml_trained:
-            self.ml_insights = self.ml_predictor.get_race_insights(frame)
+            if self.mode == 'predicted':
+                # Use predicted mode insights generator
+                self.ml_insights = self._generate_predicted_insights(frame)
+            else:
+                # Use ML predictor for historical mode
+                self.ml_insights = self.ml_predictor.get_race_insights(frame)
 
         # Draw insights with icons
         insight_y = panel_y + ML_PANEL_HEIGHT - 50
@@ -725,6 +797,153 @@ class F1ReplayWindow(arcade.Window):
                 12,
                 anchor_x="left", anchor_y="center"
             ).draw()
+
+    def _draw_chat_panel(self, frame):
+        """Draw the AI chat panel."""
+        if not self.show_chat_panel:
+            return
+
+        # Center the chat panel
+        panel_x = (self.width - CHAT_PANEL_WIDTH) / 2
+        panel_y = (self.height - CHAT_PANEL_HEIGHT) / 2
+
+        # Draw panel background
+        bg_rect = arcade.XYWH(
+            self.width / 2,
+            self.height / 2,
+            CHAT_PANEL_WIDTH,
+            CHAT_PANEL_HEIGHT
+        )
+        arcade.draw_rect_filled(bg_rect, (20, 20, 35, 240))
+        arcade.draw_rect_outline(bg_rect, arcade.color.CYAN, 3)
+
+        # Draw header
+        header_rect = arcade.XYWH(
+            self.width / 2,
+            panel_y + CHAT_PANEL_HEIGHT - 25,
+            CHAT_PANEL_WIDTH,
+            50
+        )
+        arcade.draw_rect_filled(header_rect, (0, 80, 100, 220))
+
+        arcade.Text(
+            "🤖 AI Race Analyst - Ask anything about F1!",
+            self.width / 2,
+            panel_y + CHAT_PANEL_HEIGHT - 25,
+            arcade.color.CYAN,
+            16,
+            bold=True,
+            anchor_x="center", anchor_y="center"
+        ).draw()
+
+        # Draw chat messages
+        msg_y = panel_y + CHAT_PANEL_HEIGHT - 70
+        for i, msg in enumerate(self.chat_messages[-6:]):  # Show last 6 messages
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            
+            # Truncate long messages
+            max_chars = 60
+            if len(content) > max_chars:
+                content = content[:max_chars - 3] + "..."
+            
+            if role == "user":
+                prefix = "You: "
+                color = arcade.color.LIGHT_BLUE
+            else:
+                prefix = "AI: "
+                color = arcade.color.LIGHT_GREEN
+
+            arcade.Text(
+                prefix + content,
+                panel_x + 20,
+                msg_y - (i * 40),
+                color,
+                12,
+                anchor_x="left", anchor_y="center"
+            ).draw()
+
+        # Draw input box
+        input_y = panel_y + 35
+        input_rect = arcade.XYWH(
+            self.width / 2,
+            input_y,
+            CHAT_PANEL_WIDTH - 40,
+            CHAT_INPUT_HEIGHT
+        )
+        
+        # Highlight input box when active
+        input_bg_color = (50, 50, 70) if self.chat_input_active else (30, 30, 50)
+        arcade.draw_rect_filled(input_rect, input_bg_color)
+        arcade.draw_rect_outline(input_rect, arcade.color.WHITE if self.chat_input_active else arcade.color.GRAY, 2)
+
+        # Draw input text or placeholder
+        if self.chat_input:
+            display_text = self.chat_input
+            if len(display_text) > 45:
+                display_text = "..." + display_text[-42:]
+            text_color = arcade.color.WHITE
+        else:
+            display_text = "Type your question and press Enter..."
+            text_color = arcade.color.GRAY
+
+        arcade.Text(
+            display_text,
+            panel_x + 25,
+            input_y,
+            text_color,
+            13,
+            anchor_x="left", anchor_y="center"
+        ).draw()
+
+        # Draw close instruction
+        arcade.Text(
+            "Press C to close | ESC to cancel input",
+            self.width / 2,
+            panel_y + 10,
+            arcade.color.LIGHT_GRAY,
+            11,
+            anchor_x="center", anchor_y="center"
+        ).draw()
+
+        # Show quick tips if no messages yet
+        if not self.chat_messages:
+            tips = self.ai_chat.get_quick_tips()
+            tip_y = panel_y + CHAT_PANEL_HEIGHT - 120
+            for i, tip in enumerate(tips[:4]):
+                arcade.Text(
+                    tip,
+                    panel_x + 30,
+                    tip_y - (i * 30),
+                    arcade.color.LIGHT_GRAY,
+                    11,
+                    anchor_x="left", anchor_y="center"
+                ).draw()
+
+    def _send_chat_message(self):
+        """Send the current chat input to the AI."""
+        if not self.chat_input.strip():
+            return
+
+        question = self.chat_input.strip()
+        self.chat_input = ""
+
+        # Add user message to history
+        self.chat_messages.append({"role": "user", "content": question})
+
+        # Get current frame for context
+        idx = min(int(self.frame_index), self.n_frames - 1)
+        frame = self.frames[idx]
+
+        # Update AI context with current standings
+        standings = {}
+        for code, data in frame['drivers'].items():
+            standings[code] = data.get('position', 99)
+        self.ai_chat.set_race_context(self.race_info, self.drivers, standings)
+
+        # Get AI response
+        response = self.ai_chat.ask(question)
+        self.chat_messages.append({"role": "assistant", "content": response})
 
     def on_update(self, delta_time: float):
         """Update game state."""
@@ -758,9 +977,54 @@ class F1ReplayWindow(arcade.Window):
             self.show_ml_panel = not self.show_ml_panel
         elif symbol == arcade.key.T:
             self.prediction_overlay.toggle_tables()
+        elif symbol == arcade.key.C:
+            # Toggle chat panel
+            if self.chat_input_active:
+                # If typing, C key goes to input
+                self.chat_input += 'c'
+            else:
+                self.show_chat_panel = not self.show_chat_panel
+                if self.show_chat_panel:
+                    self.chat_input_active = True
+                    self.paused = True  # Pause when chat is open
+                else:
+                    self.chat_input_active = False
+        elif symbol == arcade.key.ESCAPE:
+            if self.show_chat_panel:
+                # Close chat panel
+                self.show_chat_panel = False
+                self.chat_input_active = False
+                self.chat_input = ""
+        elif symbol == arcade.key.ENTER or symbol == arcade.key.RETURN:
+            if self.chat_input_active and self.chat_input.strip():
+                self._send_chat_message()
+        elif symbol == arcade.key.BACKSPACE:
+            if self.chat_input_active and self.chat_input:
+                self.chat_input = self.chat_input[:-1]
+
+    def on_text(self, text: str):
+        """Handle text input for chat."""
+        if self.chat_input_active and self.show_chat_panel:
+            # Only allow printable characters
+            if text.isprintable() and len(self.chat_input) < 200:
+                self.chat_input += text
 
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
         """Handle mouse click for driver selection."""
+        # If chat panel is open, check if clicking in input area
+        if self.show_chat_panel:
+            panel_x = (self.width - CHAT_PANEL_WIDTH) / 2
+            panel_y = (self.height - CHAT_PANEL_HEIGHT) / 2
+            input_y = panel_y + 35
+            
+            # Check if click is in input box area
+            if (panel_x + 20 <= x <= panel_x + CHAT_PANEL_WIDTH - 20 and
+                input_y - 20 <= y <= input_y + 20):
+                self.chat_input_active = True
+                return
+            else:
+                self.chat_input_active = False
+        
         new_selection = None
         for code, left, bottom, right, top in self.leaderboard_rects:
             if left <= x <= right and bottom <= y <= top:
