@@ -16,6 +16,10 @@ class TrackLayoutManager:
     Provides track geometry data for visualization.
     """
 
+    # Layout constants
+    DEFAULT_TRACK_WIDTH = 150
+    OVAL_TRACK_POINTS = 100
+
     # Pre-defined simplified track layouts (fallback when no historical data)
     # Format: list of (x, y) points representing the track centerline
     SIMPLIFIED_LAYOUTS = {
@@ -122,13 +126,10 @@ class TrackLayoutManager:
             x_min, x_max = x_coords.min(), x_coords.max()
             y_min, y_max = y_coords.min(), y_coords.max()
 
-            # Calculate track width from telemetry (approximate)
-            track_width = 150  # Default track width
-
             return {
                 "x": x_coords.tolist(),
                 "y": y_coords.tolist(),
-                "track_width": track_width,
+                "track_width": self.DEFAULT_TRACK_WIDTH,
                 "x_min": float(x_min),
                 "x_max": float(x_max),
                 "y_min": float(y_min),
@@ -184,14 +185,14 @@ class TrackLayoutManager:
             Generic oval layout dictionary
         """
         # Generate oval points
-        t = np.linspace(0, 2 * np.pi, 100)
+        t = np.linspace(0, 2 * np.pi, self.OVAL_TRACK_POINTS)
         x = (300 * np.cos(t)).tolist()
         y = (200 * np.sin(t)).tolist()
 
         return {
             "x": x,
             "y": y,
-            "track_width": 150,
+            "track_width": self.DEFAULT_TRACK_WIDTH,
             "x_min": -300,
             "x_max": 300,
             "y_min": -200,

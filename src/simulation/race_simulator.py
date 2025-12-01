@@ -20,6 +20,18 @@ class PredictedRaceSimulator:
     # Frame rate for simulation
     FPS = 25
 
+    # Simulation constants
+    FRAMES_PER_LAP = 200
+    BASE_SPEED = 200
+    SPEED_VARIATION_MIN = -20
+    SPEED_VARIATION_MAX = 20
+
+    # Pit stop strategy constants
+    ONE_STOP_WINDOW_MIN = 0.30
+    ONE_STOP_WINDOW_MAX = 0.50
+    FIRST_STINT_PERCENTAGE = 0.25
+    SECOND_STINT_PERCENTAGE = 0.55
+
     # Tyre compounds
     COMPOUNDS = {
         "SOFT": {"code": 0, "degradation": 0.8, "pace": 1.0},
@@ -111,8 +123,9 @@ class PredictedRaceSimulator:
 
     def _one_stop_strategy(self, total_laps: int, wear_factor: float) -> list:
         """Generate a one-stop strategy."""
-        # Pit window: between 30-50% of race
-        pit_lap = int(total_laps * random.uniform(0.30, 0.50) * wear_factor)
+        # Pit window based on class constants
+        pit_lap = int(total_laps * random.uniform(
+            self.ONE_STOP_WINDOW_MIN, self.ONE_STOP_WINDOW_MAX) * wear_factor)
         pit_lap = max(10, min(total_laps - 10, pit_lap))
 
         start_compound = random.choice(["SOFT", "MEDIUM"])
@@ -125,8 +138,8 @@ class PredictedRaceSimulator:
 
     def _two_stop_strategy(self, total_laps: int, wear_factor: float) -> list:
         """Generate a two-stop strategy."""
-        first_stint = int(total_laps * 0.25 * wear_factor)
-        second_stint = int(total_laps * 0.55 * wear_factor)
+        first_stint = int(total_laps * self.FIRST_STINT_PERCENTAGE * wear_factor)
+        second_stint = int(total_laps * self.SECOND_STINT_PERCENTAGE * wear_factor)
 
         first_stint = max(8, min(total_laps - 20, first_stint))
         second_stint = max(first_stint + 10, min(total_laps - 8, second_stint))
@@ -304,7 +317,6 @@ class PredictedRaceSimulator:
 
         # Generate frames
         frames = []
-        frames_per_lap = 200  # Approximate frames per lap
 
         qualifying = race_prediction["qualifying"]
         lap_results = race_prediction["lap_results"]
@@ -329,8 +341,8 @@ class PredictedRaceSimulator:
             positions = lap_result["positions"]
 
             # Simulate movement through this lap
-            for frame_num in range(frames_per_lap):
-                progress = frame_num / frames_per_lap
+            for frame_num in range(self.FRAMES_PER_LAP):
+                progress = frame_num / self.FRAMES_PER_LAP
 
                 frame_drivers = {}
                 for code, position in positions.items():
@@ -358,7 +370,8 @@ class PredictedRaceSimulator:
                         "dist": lap * 5000 + progress * 5000,  # Approximate distance
                         "rel_dist": track_progress,
                         "tyre": tyre_code,
-                        "speed": 200 + random.uniform(-20, 20),
+                        "speed": self.BASE_SPEED + random.uniform(
+                            self.SPEED_VARIATION_MIN, self.SPEED_VARIATION_MAX),
                         "gear": random.randint(3, 8),
                         "drs": 0,
                     }
