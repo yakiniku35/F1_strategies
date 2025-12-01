@@ -13,7 +13,7 @@ from src.ml_predictor import RaceTrendPredictor
 from src.lib.tyres import get_tyre_compound_str
 from src.dashboard.prediction_overlay import PredictionOverlay
 
-# Default screen dimensions
+# Default screen dimensions (1080p for better compatibility)
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 SCREEN_TITLE = "F1 Race Replay with ML Prediction"
@@ -25,6 +25,11 @@ HUD_PANEL_WIDTH = 250
 HUD_PANEL_HEIGHT = 180
 ML_PANEL_WIDTH = 440
 ML_PANEL_HEIGHT = 200
+
+# HUD Spacing Constants
+HUD_LINE_HEIGHT = 30
+HUD_SECTION_GAP = 45
+ML_INSIGHT_MAX_LENGTH = 55
 
 # Track status color mapping
 STATUS_COLORS = {
@@ -332,30 +337,35 @@ class F1ReplayWindow(arcade.Window):
         # HUD content
         text_x = panel_x + 15
         text_y = self.height - LEADERBOARD_PADDING - 20
+        line_offset = 0
 
         # Lap counter with larger font
         arcade.Text(f"LAP {leader_lap}",
-                    text_x, text_y,
+                    text_x, text_y - line_offset,
                     arcade.color.WHITE, 28, bold=True, anchor_y="top").draw()
+        line_offset += HUD_SECTION_GAP
 
         # Race time
         arcade.Text(f"⏱ {time_str}",
-                    text_x, text_y - 45,
+                    text_x, text_y - line_offset,
                     arcade.color.LIGHT_GRAY, 18, anchor_y="top").draw()
+        line_offset += HUD_LINE_HEIGHT
 
         # Playback speed
         speed_color = arcade.color.GREEN if self.playback_speed > 1 else (
             arcade.color.YELLOW if self.playback_speed < 1 else arcade.color.WHITE
         )
         arcade.Text(f"▶ {self.playback_speed}x",
-                    text_x, text_y - 75,
+                    text_x, text_y - line_offset,
                     speed_color, 16, anchor_y="top").draw()
+        line_offset += HUD_LINE_HEIGHT
 
         # Pause indicator
         if self.paused:
             arcade.Text("⏸ PAUSED",
-                        text_x, text_y - 100,
+                        text_x, text_y - line_offset,
                         arcade.color.YELLOW, 16, bold=True, anchor_y="top").draw()
+        line_offset += HUD_LINE_HEIGHT
 
         # Track status flag with background
         status_texts = {
@@ -368,7 +378,7 @@ class F1ReplayWindow(arcade.Window):
 
         if track_status in status_texts:
             text, color, bg_color = status_texts[track_status]
-            flag_y = text_y - 130
+            flag_y = text_y - line_offset
             flag_rect = arcade.XYWH(
                 text_x + 100, flag_y + 10,
                 200, 30
@@ -703,8 +713,11 @@ class F1ReplayWindow(arcade.Window):
         # Draw insights with icons
         insight_y = panel_y + ML_PANEL_HEIGHT - 50
         for i, insight in enumerate(self.ml_insights[:4]):
-            # Truncate if too long
-            display_text = insight if len(insight) < 55 else insight[:52] + "..."
+            # Truncate if too long using constant
+            if len(insight) < ML_INSIGHT_MAX_LENGTH:
+                display_text = insight
+            else:
+                display_text = insight[:ML_INSIGHT_MAX_LENGTH - 3] + "..."
             arcade.Text(
                 display_text,
                 panel_x + 15,
