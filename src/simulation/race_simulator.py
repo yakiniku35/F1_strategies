@@ -10,6 +10,7 @@ from typing import Optional
 from src.simulation.future_race_data import FutureRaceDataProvider
 from src.simulation.track_layouts import TrackLayoutManager
 from src.f1_data import INTERPOLATION_FACTOR
+from src.simulation.race_dynamics import RaceDynamicsManager, TyreDegradation, PitStopStrategy, OvertakingMechanics
 
 
 class PredictedRaceSimulator:
@@ -74,6 +75,10 @@ class PredictedRaceSimulator:
         self.predictions = {}
         self.pit_stop_events = []
         self.overtake_events = []
+        
+        # Initialize race dynamics manager
+        location = self.race_info.get("location", "default") if self.race_info else "default"
+        self.dynamics = RaceDynamicsManager(track_name=location)
 
     def get_qualifying_results(self) -> list:
         """
@@ -194,7 +199,7 @@ class PredictedRaceSimulator:
 
     def predict_full_race(self, total_laps: Optional[int] = None) -> dict:
         """
-        Predict the full race outcome.
+        Predict the full race outcome with realistic dynamics.
 
         Args:
             total_laps: Total race laps (or auto-detect from schedule)
@@ -209,8 +214,10 @@ class PredictedRaceSimulator:
 
         # Initialize driver states
         driver_states = {}
+        driver_codes = []
         for quali in qualifying:
             code = quali["code"]
+            driver_codes.append(code)
             driver_states[code] = {
                 "position": quali["grid"],
                 "grid": quali["grid"],
@@ -222,7 +229,11 @@ class PredictedRaceSimulator:
                 "pace": self._calculate_base_pace(quali["team"]),
                 "pit_stops": 0,
                 "points": quali.get("points", 0),
+                "speed": 200.0,  # Base speed
             }
+        
+        # Initialize race dynamics
+        self.dynamics.initialize_race(driver_codes, starting_compound="MEDIUM")
 
         # Generate pit strategies for all drivers
         pit_strategies = {}
@@ -234,41 +245,100 @@ class PredictedRaceSimulator:
         all_overtakes = []
 
         for lap in range(1, total_laps + 1):
-            # Update tyre age and apply degradation
+            # Update tyre age
             for code, state in driver_states.items():
                 state["lap"] = lap
-                state["tyre_age"] += 1
 
                 # Check for pit stop
+                pitted = False
                 for pit in pit_strategies[code]:
                     if pit["lap"] == lap and pit["event"] == "pit":
+                        # Execute pit stop with position loss
+                        old_position = state["position"]
+                        new_position = self.dynamics.execute_pit_stop(
+                            code, 
+                            pit["compound"],
+                            old_position,
+                            len(driver_codes)
+                        )
+                        state["position"] = new_position
                         state["tyre"] = pit["compound"]
                         state["tyre_age"] = 0
                         state["pit_stops"] += 1
-                        state["pace"] -= 0.01  # Time lost in pit
+                        pitted = True
+                        
+                        # Record pit event
+                        self.pit_stop_events.append({
+                            "lap": lap,
+                            "driver": code,
+                            "old_position": old_position,
+                            "new_position": new_position,
+                            "compound": pit["compound"]
+                        })
 
-                # Apply tyre degradation
+                # Age tyres if no pit stop
+                if not pitted:
+                    state["tyre_age"] += 1
+
+                # Calculate speed with tyre degradation
+                tyre_performance = self.dynamics.tyre_degradation.get_performance_factor(code)
                 compound = self.COMPOUNDS.get(state["tyre"], self.COMPOUNDS["MEDIUM"])
-                degradation = compound["degradation"] * state["tyre_age"] * 0.001
-                state["pace"] = self._calculate_base_pace(state["team"]) * compound["pace"] - degradation
+                
+                base_speed = 200 + (state["pace"] * 50)  # Convert pace to speed
+                state["speed"] = base_speed * compound["pace"] * tyre_performance
+                
+            # Update dynamics manager
+            self.dynamics.update_lap(driver_states)
 
-            # Predict overtakes
-            overtakes = self.predict_overtakes(driver_states, lap)
-            all_overtakes.extend(overtakes)
-
-            # Apply overtakes
-            for overtake in overtakes:
-                overtaker_pos = driver_states[overtake["overtaker"]]["position"]
-                overtaken_pos = driver_states[overtake["overtaken"]]["position"]
-
-                driver_states[overtake["overtaker"]]["position"] = overtaken_pos
-                driver_states[overtake["overtaken"]]["position"] = overtaker_pos
+            # Attempt overtakes
+            overtakes_this_lap = []
+            positions_sorted = sorted(driver_states.items(), 
+                                     key=lambda x: x[1]["position"])
+            
+            for i in range(len(positions_sorted) - 1):
+                attacker_code, attacker_state = positions_sorted[i + 1]
+                defender_code, defender_state = positions_sorted[i]
+                
+                # Only attempt if positions are adjacent
+                if abs(attacker_state["position"] - defender_state["position"]) <= 1:
+                    # Get tyre performance
+                    attacker_tyres = self.dynamics.tyre_degradation.get_performance_factor(attacker_code)
+                    defender_tyres = self.dynamics.tyre_degradation.get_performance_factor(defender_code)
+                    
+                    # Calculate overtake probability
+                    overtake_prob = OvertakingMechanics.calculate_overtake_probability(
+                        attacker_state["speed"],
+                        defender_state["speed"],
+                        attacker_tyres,
+                        defender_tyres,
+                        self.dynamics.track_name,
+                        drs_available=True if i < 20 else False,  # DRS available in top 20
+                        laps_behind=1
+                    )
+                    
+                    # Attempt overtake
+                    if OvertakingMechanics.attempt_overtake(overtake_prob):
+                        # Swap positions
+                        old_attacker_pos = attacker_state["position"]
+                        old_defender_pos = defender_state["position"]
+                        
+                        attacker_state["position"] = old_defender_pos
+                        defender_state["position"] = old_attacker_pos
+                        
+                        overtakes_this_lap.append({
+                            "lap": lap,
+                            "overtaker": attacker_code,
+                            "overtaken": defender_code,
+                            "probability": overtake_prob
+                        })
+            
+            all_overtakes.extend(overtakes_this_lap)
 
             # Store lap result
             lap_result = {
                 "lap": lap,
                 "positions": {code: state["position"] for code, state in driver_states.items()},
-                "overtakes": overtakes,
+                "overtakes": overtakes_this_lap,
             }
             lap_results.append(lap_result)
 
