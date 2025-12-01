@@ -70,7 +70,8 @@ class F1ReplayWindow(arcade.Window):
     """Main F1 Replay Window with ML prediction integration."""
 
     def __init__(self, frames, track_statuses, example_lap, drivers, title,
-                 playback_speed=1.0, driver_colors=None, predictions: Optional[dict] = None):
+                 playback_speed=1.0, driver_colors=None, predictions: Optional[dict] = None,
+                 mode: str = 'historical', race_info: Optional[dict] = None):
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
 
         self.frames = frames
@@ -82,6 +83,10 @@ class F1ReplayWindow(arcade.Window):
         self.frame_index = 0.0
         self.paused = False
         self._tyre_textures = {}
+
+        # Mode: 'historical' or 'predicted'
+        self.mode = mode
+        self.race_info = race_info or {}
 
         # Load tyre textures
         self._load_tyre_textures()
@@ -129,8 +134,12 @@ class F1ReplayWindow(arcade.Window):
         self.prediction_overlay = PredictionOverlay(predictions)
         self.external_predictions = predictions or {}
 
-        # Train ML model with race data
-        self._train_ml_model()
+        # For predicted mode, skip training on frame data
+        if self.mode != 'predicted':
+            self._train_ml_model()
+        else:
+            self.ml_insights = ["🔮 Running in prediction mode"]
+            self.ml_trained = True
 
     def _load_tyre_textures(self):
         """Load tyre compound textures."""
@@ -267,6 +276,17 @@ class F1ReplayWindow(arcade.Window):
         minutes = int((t % 3600) // 60)
         seconds = int(t % 60)
         time_str = f"{hours:02}:{minutes:02}:{seconds:02}"
+
+        # Draw predicted race indicator if in predicted mode
+        if self.mode == 'predicted':
+            # Draw prediction banner
+            gp_name = self.race_info.get('gp', 'Unknown GP')
+            year = self.race_info.get('year', 2025)
+            banner_text = f"🔮 PREDICTED RACE - {year} {gp_name}"
+            arcade.Text(banner_text,
+                        self.width / 2, self.height - 25,
+                        arcade.color.CYAN, 20, bold=True,
+                        anchor_x="center", anchor_y="top").draw()
 
         # Draw HUD - Top Left
         arcade.Text(f"Lap: {leader_lap}",
@@ -594,7 +614,8 @@ class F1ReplayWindow(arcade.Window):
 
 
 def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
-                      playback_speed=1.0, driver_colors=None, predictions=None):
+                      playback_speed=1.0, driver_colors=None, predictions=None,
+                      mode='historical', race_info=None):
     """Run the F1 replay visualization.
 
     Args:
@@ -606,6 +627,8 @@ def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
         playback_speed: Initial playback speed multiplier
         driver_colors: Dictionary mapping driver codes to RGB colors
         predictions: Optional dictionary of ML predictions
+        mode: 'historical' for replays, 'predicted' for future race predictions
+        race_info: Dictionary with race information (year, gp, etc.)
     """
     F1ReplayWindow(
         frames=frames,
@@ -615,6 +638,8 @@ def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
         playback_speed=playback_speed,
         driver_colors=driver_colors,
         title=title,
-        predictions=predictions
+        predictions=predictions,
+        mode=mode,
+        race_info=race_info
     )
     arcade.run()

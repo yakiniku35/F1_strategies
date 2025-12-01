@@ -287,3 +287,284 @@ class RaceTrendPredictor:
             'estimated_pit_window': (current_lap + life[0], current_lap + life[1]),
             'recommendation': f"Consider pitting between lap {current_lap + life[0]} and {current_lap + life[1]}"
         }
+
+
+class PreRacePredictor:
+    """
+    Enhanced predictor for future race outcomes.
+    Uses historical season data to predict race results before they happen.
+    """
+
+    # Team strength mapping (lower = stronger)
+    TEAM_STRENGTH = {
+        'Red Bull': 1.0,
+        'McLaren': 1.5,
+        'Ferrari': 2.0,
+        'Mercedes': 2.5,
+        'Aston Martin': 4.5,
+        'Williams': 6.0,
+        'RB': 5.5,
+        'Alpine': 6.5,
+        'Haas': 7.0,
+        'Sauber': 7.5,
+    }
+
+    def __init__(self):
+        """Initialize the pre-race predictor."""
+        self.model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+        self.scaler = StandardScaler()
+        self.is_trained = False
+        self.training_years = []
+
+    def prepare_historical_data(self, year: int):
+        """
+        Fetch historical race results to train the model.
+
+        Args:
+            year: Year to fetch data from
+
+        Returns:
+            Tuple of (X_train, y_train) numpy arrays
+        """
+        import fastf1
+        import pandas as pd
+
+        X_train = []
+        y_train = []
+
+        try:
+            schedule = fastf1.get_event_schedule(year)
+            completed_races = schedule[schedule['EventDate'] < pd.Timestamp.now()]
+
+            print(f"正在從 {len(completed_races)} 場 {year} 歷史比賽中學習...")
+
+            for _, race_event in completed_races.iterrows():
+                try:
+                    session = fastf1.get_session(year, race_event['RoundNumber'], 'R')
+                    session.load(telemetry=False, weather=False, messages=False)
+
+                    results = session.results
+
+                    team_strength = results.groupby('TeamName')['Position'].mean().to_dict()
+
+                    for driver in results.index:
+                        d_data = results.loc[driver]
+
+                        valid_positions = ['R', 'F'] + [str(i) for i in range(1, 21)]
+                        if d_data['ClassifiedPosition'] not in valid_positions:
+                            continue
+
+                        grid_pos = d_data['GridPosition']
+                        team_score = team_strength.get(d_data['TeamName'], 10)
+                        points = d_data['Points']
+
+                        X_train.append([grid_pos, team_score, points])
+                        y_train.append(d_data['Position'])
+
+                except Exception as e:
+                    print(f"跳過第 {race_event['RoundNumber']} 站: {e}")
+                    continue
+
+        except Exception as e:
+            print(f"無法獲取 {year} 年數據: {e}")
+
+        return np.array(X_train), np.array(y_train)
+
+    def train_on_historical_data(self, years: list = None):
+        """
+        Train the model on multiple years of historical data.
+
+        Args:
+            years: List of years to train on (default: [2023, 2024])
+
+        Returns:
+            True if training succeeded, False otherwise
+        """
+        if years is None:
+            years = [2023, 2024]
+
+        all_X = []
+        all_y = []
+
+        for year in years:
+            print(f"正在下載 {year} 賽季數據...")
+            X, y = self.prepare_historical_data(year)
+            if len(X) > 0:
+                all_X.append(X)
+                all_y.append(y)
+
+        if not all_X:
+            print("❌ 訓練失敗：沒有足夠的歷史數據")
+            return False
+
+        X_combined = np.vstack(all_X)
+        y_combined = np.concatenate(all_y)
+
+        # Scale features
+        X_scaled = self.scaler.fit_transform(X_combined)
+
+        # Train model
+        self.model.fit(X_scaled, y_combined)
+        self.is_trained = True
+        self.training_years = years
+
+        print(f"✅ 模型訓練完成！使用了 {len(X_combined)} 個數據點")
+        return True
+
+    def train_for_season(self, year: int = 2023):
+        """
+        Train the model based on past races of a single year.
+        Backward compatible method.
+
+        Args:
+            year: Year to train on
+
+        Returns:
+            True if training succeeded
+        """
+        return self.train_on_historical_data([year])
+
+    def predict_race_result(self, qualifying_positions: list, track_type: str = "permanent") -> list:
+        """
+        Predict race results based on qualifying positions.
+
+        Args:
+            qualifying_positions: List of dicts with driver, grid, team, points
+            track_type: Type of track ("permanent", "street")
+
+        Returns:
+            List of predictions sorted by predicted finish
+        """
+        if not self.is_trained:
+            return []
+
+        predictions = []
+
+        for driver in qualifying_positions:
+            team_score = self.TEAM_STRENGTH.get(driver['team'], 10.0)
+
+            features = np.array([[
+                driver['grid'],
+                team_score,
+                driver.get('points', 0)
+            ]])
+
+            X_scaled = self.scaler.transform(features)
+            predicted_pos = self.model.predict(X_scaled)[0]
+
+            # Calculate confidence based on grid position and team strength
+            confidence = self._calculate_confidence(driver['grid'], team_score)
+
+            predictions.append({
+                'driver': driver['driver'],
+                'name': driver.get('name', driver['driver']),
+                'team': driver['team'],
+                'grid': driver['grid'],
+                'predicted_finish': round(predicted_pos, 1),
+                'confidence': round(confidence, 2),
+            })
+
+        predictions.sort(key=lambda x: x['predicted_finish'])
+
+        # Assign final positions
+        for i, pred in enumerate(predictions):
+            pred['position'] = i + 1
+
+        return predictions
+
+    def _calculate_confidence(self, grid: int, team_strength: float) -> float:
+        """Calculate prediction confidence."""
+        # Front runners with strong teams have higher confidence
+        position_factor = max(0.5, 1 - grid * 0.03)
+        team_factor = max(0.5, 1 - (team_strength - 1) * 0.08)
+        return min(0.95, position_factor * team_factor)
+
+    def predict_next_race(self, qualifying_results: list) -> list:
+        """
+        Predict the outcome of the next race based on qualifying results.
+        Backward compatible method.
+
+        Args:
+            qualifying_results: List of dicts with driver, grid, team, points
+
+        Returns:
+            Sorted list of predictions
+        """
+        return self.predict_race_result(qualifying_results)
+
+    def predict_lap_by_lap(self, qualifying_positions: list, total_laps: int) -> list:
+        """
+        Predict position changes for each lap of the race.
+
+        Args:
+            qualifying_positions: List of driver qualifying data
+            total_laps: Total number of laps in the race
+
+        Returns:
+            List of lap-by-lap predictions (frames)
+        """
+        import random
+
+        if not self.is_trained:
+            return []
+
+        # Initialize positions from qualifying
+        current_positions = {}
+        for quali in qualifying_positions:
+            current_positions[quali['driver']] = {
+                'position': quali['grid'],
+                'team': quali['team'],
+                'pace': 1.0 - (self.TEAM_STRENGTH.get(quali['team'], 10) - 1) * 0.02,
+                'tyre_age': 0,
+            }
+
+        lap_predictions = []
+
+        for lap in range(1, total_laps + 1):
+            # Update tyre degradation
+            for driver, state in current_positions.items():
+                state['tyre_age'] += 1
+                degradation = state['tyre_age'] * 0.001
+                state['current_pace'] = state['pace'] - degradation
+
+            # Simulate potential position changes
+            sorted_drivers = sorted(
+                current_positions.items(),
+                key=lambda x: x[1]['position']
+            )
+
+            # Check for overtakes
+            for i in range(len(sorted_drivers) - 1):
+                ahead = sorted_drivers[i]
+                behind = sorted_drivers[i + 1]
+
+                pace_diff = behind[1]['current_pace'] - ahead[1]['current_pace']
+                if pace_diff > 0.01 and random.random() < 0.3:
+                    # Swap positions
+                    ahead_pos = current_positions[ahead[0]]['position']
+                    behind_pos = current_positions[behind[0]]['position']
+                    current_positions[ahead[0]]['position'] = behind_pos
+                    current_positions[behind[0]]['position'] = ahead_pos
+
+            # Record lap state
+            lap_predictions.append({
+                'lap': lap,
+                'positions': {
+                    driver: {
+                        'position': state['position'],
+                        'trend': 'stable',
+                        'confidence': 0.8,
+                    }
+                    for driver, state in current_positions.items()
+                }
+            })
+
+        return lap_predictions
+
+    def get_training_info(self) -> dict:
+        """Get information about the trained model."""
+        return {
+            'is_trained': self.is_trained,
+            'training_years': self.training_years,
+            'model_type': 'RandomForestRegressor',
+        }
