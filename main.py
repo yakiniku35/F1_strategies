@@ -14,7 +14,18 @@ Usage:
 
 import sys
 import argparse
+import logging
 from tabulate import tabulate
+
+# Configure logging to suppress verbose FastF1 output
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(message)s'
+)
+# Suppress FastF1 and other library logs
+logging.getLogger('fastf1').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
 from src.f1_data import get_race_telemetry, get_race_data, load_race_session, enable_cache
 from src.arcade_replay import run_arcade_replay
@@ -96,29 +107,31 @@ def predict_future_race(year, gp, speed=1.0, train_model=True):
     print("=" * 50)
 
     # Create simulator
+    print("⏳ 正在初始化預測系統...")
     simulator = PredictedRaceSimulator(year, gp)
 
     # Get race info
     race_info = simulator.race_info
     if race_info:
-        print(f"📍 比賽: {race_info.get('name', gp)}")
-        print(f"📍 地點: {race_info.get('location', 'Unknown')}")
-        print(f"📍 圈數: {race_info.get('laps', 50)}")
+        print(f"✅ 比賽: {race_info.get('name', gp)}")
+        print(f"   地點: {race_info.get('location', 'Unknown')}")
+        print(f"   圈數: {race_info.get('laps', 50)}")
     else:
         print(f"⚠️ 找不到 {gp} 的賽程資訊，使用預設值")
 
     # Train ML model if requested
     if train_model:
-        print("\n📊 正在訓練預測模型...")
+        print("\n⏳ 正在訓練預測模型（可能需要幾分鐘）...")
         predictor = PreRacePredictor()
         try:
             # Try to train on historical data (may fail if no network)
             predictor.train_on_historical_data([2023, 2024])
+            print("✅ 模型訓練完成")
         except Exception as e:
-            print(f"⚠️ 無法訓練模型 (使用內建數據): {e}")
+            print(f"⚠️ 使用預設模型")
 
     # Get qualifying prediction
-    print("\n🏁 預測排位賽結果...")
+    print("\n⏳ 正在生成排位賽預測...")
     qualifying = simulator.get_qualifying_results()
 
     # Get prediction confidence
@@ -146,7 +159,7 @@ def predict_future_race(year, gp, speed=1.0, train_model=True):
     run_sim = input().strip().lower()
 
     if run_sim in ['y', 'yes', '是']:
-        print("\n🎬 正在生成模擬數據...")
+        print("\n⏳ 正在生成比賽模擬數據...")
 
         # Generate simulation frames
         sim_data = simulator.generate_simulated_frames()
@@ -184,6 +197,7 @@ def replay_historical_race(year, gp, speed=1.0, use_optimized=True):
     enable_cache()
 
     try:
+        print("⏳ 正在載入比賽資料...")
         session = load_race_session(year, gp, 'R')
         event_name = session.event['EventName']
         print(f"✅ 載入成功: {event_name} - Round {session.event['RoundNumber']}")
@@ -194,11 +208,10 @@ def replay_historical_race(year, gp, speed=1.0, use_optimized=True):
         return
 
     # Get race telemetry - try optimized format first
-    print("正在處理遙測數據...")
+    print("⏳ 正在處理遙測數據...")
     
     if use_optimized:
         try:
-            print("📊 Using optimized NumPy data format...")
             race_data = get_race_data(session)
             
             # Get example lap for track layout
@@ -210,11 +223,11 @@ def replay_historical_race(year, gp, speed=1.0, use_optimized=True):
             drivers = race_data['driver_codes']
             n_frames = race_data['driver_data_array'].shape[0]
             
-            print(f"\n🏁 開始回放 {event_name}")
-            print(f"📊 車手數量: {len(drivers)}")
-            print(f"📊 總幀數: {n_frames}")
-            print(f"📊 播放速度: {speed}x")
-            print("🚀 使用優化的 NumPy 數據格式 (optimized for performance)")
+            print(f"\n🏁 準備開始回放")
+            print(f"   車手數量: {len(drivers)}")
+            print(f"   總幀數: {n_frames:,}")
+            print(f"   播放速度: {speed}x")
+            print("   使用優化格式 ✓")
             print("\n🎬 開啟回放視窗...")
             
             # Run the replay with optimized data
@@ -232,9 +245,10 @@ def replay_historical_race(year, gp, speed=1.0, use_optimized=True):
             )
             return
         except Exception as e:
-            print(f"⚠️ 優化格式載入失敗，使用傳統格式: {e}")
+            print(f"⚠️ 優化格式載入失敗，切換到傳統格式")
     
     # Fallback to legacy format
+    print("⏳ 使用傳統格式處理...")
     try:
         race_telemetry = get_race_telemetry(session)
     except Exception as e:
@@ -254,10 +268,10 @@ def replay_historical_race(year, gp, speed=1.0, use_optimized=True):
     # Get drivers list
     drivers = [session.get_driver(num)["Abbreviation"] for num in session.drivers]
 
-    print(f"\n🏁 開始回放 {event_name}")
-    print(f"📊 車手數量: {len(drivers)}")
-    print(f"📊 總幀數: {len(race_telemetry['frames'])}")
-    print(f"📊 播放速度: {speed}x")
+    print(f"\n🏁 準備開始回放")
+    print(f"   車手數量: {len(drivers)}")
+    print(f"   總幀數: {len(race_telemetry['frames']):,}")
+    print(f"   播放速度: {speed}x")
     print("\n🎬 開啟回放視窗...")
 
     # Run the replay

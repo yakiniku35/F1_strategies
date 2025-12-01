@@ -207,9 +207,8 @@ class RaceTrendPredictor:
         )
         self.laptime_model.fit(X_train_sp, y_sp_train)
         
-        # Evaluate
+        # Evaluate (silent - no print)
         pos_score = self.position_model.score(X_test, y_pos_test)
-        print(f"ML Model trained (NumPy) - Position prediction R² score: {pos_score:.3f}")
         
         self.is_trained = True
         return True
@@ -269,9 +268,8 @@ class RaceTrendPredictor:
         )
         self.laptime_model.fit(X_train_lt, y_lt_train)
 
-        # Evaluate
+        # Evaluate (silent)
         pos_score = self.position_model.score(X_test, y_pos_test)
-        print(f"ML Model trained - Position prediction R² score: {pos_score:.3f}")
 
         self.is_trained = True
         return True
@@ -481,10 +479,13 @@ class PreRacePredictor:
             schedule = fastf1.get_event_schedule(year)
             completed_races = schedule[schedule['EventDate'] < pd.Timestamp.now()]
 
-            print(f"正在從 {len(completed_races)} 場 {year} 歷史比賽中學習...")
-
-            for _, race_event in completed_races.iterrows():
+            # Reduced verbosity
+            for idx, (_, race_event) in enumerate(completed_races.iterrows(), 1):
                 try:
+                    # Show progress every 5 races
+                    if idx % 5 == 1 or idx == len(completed_races):
+                        print(f"   處理進度: {idx}/{len(completed_races)} 場比賽...")
+                    
                     session = fastf1.get_session(year, race_event['RoundNumber'], 'R')
                     session.load(telemetry=False, weather=False, messages=False)
 
@@ -506,12 +507,13 @@ class PreRacePredictor:
                         X_train.append([grid_pos, team_score, points])
                         y_train.append(d_data['Position'])
 
-                except Exception as e:
-                    print(f"跳過第 {race_event['RoundNumber']} 站: {e}")
+                except Exception:
+                    # Silently skip failed races
                     continue
 
-        except Exception as e:
-            print(f"無法獲取 {year} 年數據: {e}")
+        except Exception:
+            # Silently fail if can't get schedule
+            pass
 
         return np.array(X_train), np.array(y_train)
 
@@ -532,11 +534,12 @@ class PreRacePredictor:
         all_y = []
 
         for year in years:
-            print(f"正在下載 {year} 賽季數據...")
+            print(f"   載入 {year} 賽季數據...")
             X, y = self.prepare_historical_data(year)
             if len(X) > 0:
                 all_X.append(X)
                 all_y.append(y)
+                print(f"   ✓ {year}: {len(X)} 個數據點")
 
         if not all_X:
             print("❌ 訓練失敗：沒有足夠的歷史數據")
@@ -549,11 +552,11 @@ class PreRacePredictor:
         X_scaled = self.scaler.fit_transform(X_combined)
 
         # Train model
+        print(f"   正在訓練模型...")
         self.model.fit(X_scaled, y_combined)
         self.is_trained = True
         self.training_years = years
 
-        print(f"✅ 模型訓練完成！使用了 {len(X_combined)} 個數據點")
         return True
 
     def train_for_season(self, year: int = 2023):

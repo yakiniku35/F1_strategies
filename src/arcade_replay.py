@@ -365,28 +365,22 @@ class F1ReplayWindow(arcade.Window):
 
     def _train_ml_model(self):
         """Train the ML prediction model with race data."""
-        print("Training ML prediction model...")
-        
-        # If using NumPy arrays, convert to frames for ML training
+        # Silently train the model
         if self.use_numpy_arrays:
             # ML predictor can accept NumPy arrays directly
             if self.ml_predictor.train_from_numpy(
                 self.driver_data_array, self.frame_metadata, self.driver_codes
             ):
                 self.ml_trained = True
-                self.ml_insights = ["ML model trained successfully!"]
-                print("ML model trained successfully!")
+                self.ml_insights = ["ML model ready"]
             else:
                 self.ml_insights = ["ML training failed - insufficient data"]
-                print("ML training failed")
         else:
             if self.ml_predictor.train(self.frames, self.drivers):
                 self.ml_trained = True
-                self.ml_insights = ["ML model trained successfully!"]
-                print("ML model trained successfully!")
+                self.ml_insights = ["ML model ready"]
             else:
                 self.ml_insights = ["ML training failed - insufficient data"]
-                print("ML training failed")
 
     def _interpolate_points(self, xs, ys, interp_points=2000):
         """Generate smooth points in world coordinates."""
