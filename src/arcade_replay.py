@@ -2,13 +2,18 @@
 F1 Race Replay with Arcade graphics library.
 Based on f1-race-replay project by Tom Shaw.
 Extended with ML prediction capabilities and AI chat.
+
+Optimized for performance with batch rendering and NumPy data access.
 """
 
 import os
 import arcade
 import numpy as np
-from typing import Optional
-from src.f1_data import FPS
+from typing import Optional, Union, List
+from src.f1_data import (
+    FPS, FIELD_X, FIELD_Y, FIELD_DIST, FIELD_REL_DIST, FIELD_LAP,
+    FIELD_TYRE, FIELD_SPEED, FIELD_GEAR, FIELD_DRS, FIELD_POSITION
+)
 from src.ml_predictor import RaceTrendPredictor
 from src.lib.tyres import get_tyre_compound_str
 from src.dashboard.prediction_overlay import PredictionOverlay
@@ -36,6 +41,9 @@ CHAT_INPUT_HEIGHT = 40
 HUD_LINE_HEIGHT = 30
 HUD_SECTION_GAP = 45
 ML_INSIGHT_MAX_LENGTH = 55
+
+# Car rendering constants
+CAR_RADIUS = 8  # Radius of car circles on track
 
 # Track status color mapping
 STATUS_COLORS = {
@@ -91,17 +99,22 @@ def build_track_from_example_lap(example_lap, track_width=200):
 
 
 class F1ReplayWindow(arcade.Window):
-    """Main F1 Replay Window with ML prediction integration."""
+    """Main F1 Replay Window with ML prediction integration.
+    
+    Supports both legacy frame format (list of dicts) and optimized NumPy arrays.
+    When using NumPy arrays, provides significant performance improvements through
+    batch rendering and vectorized data access.
+    """
 
     def __init__(self, frames, track_statuses, example_lap, drivers, title,
                  playback_speed=1.0, driver_colors=None, predictions: Optional[dict] = None,
-                 mode: str = 'historical', race_info: Optional[dict] = None):
+                 mode: str = 'historical', race_info: Optional[dict] = None,
+                 driver_data_array: Optional[np.ndarray] = None,
+                 frame_metadata: Optional[np.ndarray] = None,
+                 driver_codes: Optional[List[str]] = None):
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
 
-        self.frames = frames
         self.track_statuses = track_statuses
-        self.n_frames = len(frames)
-        self.drivers = list(drivers)
         self.playback_speed = playback_speed
         self.driver_colors = driver_colors or {}
         self.frame_index = 0.0
@@ -111,6 +124,29 @@ class F1ReplayWindow(arcade.Window):
         # Mode: 'historical' or 'predicted'
         self.mode = mode
         self.race_info = race_info or {}
+
+        # Optimized NumPy array format for performance
+        self.use_numpy_arrays = driver_data_array is not None
+        if self.use_numpy_arrays:
+            self.driver_data_array = driver_data_array
+            self.frame_metadata = frame_metadata
+            self.driver_codes = driver_codes or list(drivers)
+            self.n_frames = driver_data_array.shape[0]
+            self.n_drivers = driver_data_array.shape[1]
+            self.drivers = self.driver_codes
+            # Create driver code to index mapping for fast lookup
+            self._driver_idx_map = {code: idx for idx, code in enumerate(self.driver_codes)}
+            # Legacy frames not needed
+            self.frames = None
+        else:
+            # Legacy frame format
+            self.frames = frames
+            self.n_frames = len(frames)
+            self.drivers = list(drivers)
+            self.driver_data_array = None
+            self.frame_metadata = None
+            self.driver_codes = None
+            self._driver_idx_map = None
 
         # Load tyre textures
         self._load_tyre_textures()
@@ -148,6 +184,15 @@ class F1ReplayWindow(arcade.Window):
         self.selected_driver = None
         self.leaderboard_rects = []
 
+        # Batch rendering - Static track shapes (regenerated only when track status changes)
+        self._track_shapes: Optional[arcade.ShapeElementList] = None
+        self._last_track_status = None  # Track the last status to detect changes
+
+        # Batch rendering - Car sprites
+        self._car_sprites: Optional[arcade.SpriteList] = None
+        self._car_sprite_map: dict = {}  # Maps driver code to sprite
+        self._init_car_sprites()
+
         # ML Prediction
         self.ml_predictor = RaceTrendPredictor()
         self.ml_insights = ["Initializing ML prediction system..."]
@@ -174,6 +219,89 @@ class F1ReplayWindow(arcade.Window):
             self.ml_trained = True
             # Store last update time for predicted insights
             self._last_insight_update = 0
+
+    def _init_car_sprites(self):
+        """Initialize car sprites for batch rendering."""
+        self._car_sprites = arcade.SpriteList()
+        self._car_sprite_map = {}
+        
+        for code in self.drivers:
+            color = self.driver_colors.get(code, arcade.color.WHITE)
+            # Create a simple circular sprite for each car
+            sprite = arcade.SpriteCircle(CAR_RADIUS, color)
+            sprite.visible = False  # Start hidden, will be positioned in on_update
+            self._car_sprites.append(sprite)
+            self._car_sprite_map[code] = sprite
+
+    def _build_track_shapes(self, track_color):
+        """Build static track geometry as ShapeElementList for batch rendering.
+        
+        Only regenerate when track status (color) changes.
+        """
+        self._track_shapes = arcade.ShapeElementList()
+        
+        # Create line strips for inner and outer track edges
+        if len(self.screen_inner_points) > 1:
+            inner_line = arcade.create_line_strip(
+                self.screen_inner_points, track_color, 3
+            )
+            self._track_shapes.append(inner_line)
+        
+        if len(self.screen_outer_points) > 1:
+            outer_line = arcade.create_line_strip(
+                self.screen_outer_points, track_color, 3
+            )
+            self._track_shapes.append(outer_line)
+        
+        self._last_track_status = track_color
+
+    def _get_current_frame_data(self, frame_idx: int) -> dict:
+        """Get current frame data, supporting both legacy and NumPy formats.
+        
+        Returns a frame dictionary compatible with legacy code.
+        """
+        if self.use_numpy_arrays:
+            # Fast NumPy array access
+            frame_data = {}
+            for driver_idx, code in enumerate(self.driver_codes):
+                frame_data[code] = {
+                    "x": float(self.driver_data_array[frame_idx, driver_idx, FIELD_X]),
+                    "y": float(self.driver_data_array[frame_idx, driver_idx, FIELD_Y]),
+                    "dist": float(self.driver_data_array[frame_idx, driver_idx, FIELD_DIST]),
+                    "rel_dist": float(self.driver_data_array[frame_idx, driver_idx, FIELD_REL_DIST]),
+                    "lap": int(round(self.driver_data_array[frame_idx, driver_idx, FIELD_LAP])),
+                    "tyre": int(self.driver_data_array[frame_idx, driver_idx, FIELD_TYRE]),
+                    "position": int(self.driver_data_array[frame_idx, driver_idx, FIELD_POSITION]),
+                    "speed": float(self.driver_data_array[frame_idx, driver_idx, FIELD_SPEED]),
+                    "gear": int(self.driver_data_array[frame_idx, driver_idx, FIELD_GEAR]),
+                    "drs": int(self.driver_data_array[frame_idx, driver_idx, FIELD_DRS]),
+                }
+            return {
+                "t": float(self.frame_metadata[frame_idx, 0]),
+                "lap": int(self.frame_metadata[frame_idx, 1]),
+                "drivers": frame_data,
+            }
+        else:
+            # Legacy frame format
+            return self.frames[frame_idx]
+
+    def _update_car_sprites(self, frame: dict):
+        """Update car sprite positions for batch rendering."""
+        for code, pos in frame["drivers"].items():
+            if code not in self._car_sprite_map:
+                continue
+            
+            sprite = self._car_sprite_map[code]
+            
+            # Hide cars that are out (rel_dist == 1 indicates car retired/DNF)
+            if pos.get("rel_dist", 0) == 1:
+                sprite.visible = False
+                continue
+            
+            sprite.visible = True
+            sx, sy = self.world_to_screen(pos["x"], pos["y"])
+            sprite.center_x = sx
+            sprite.center_y = sy
 
     def _generate_predicted_insights(self, frame):
         """Generate insights for predicted mode based on current frame data."""
@@ -238,13 +366,27 @@ class F1ReplayWindow(arcade.Window):
     def _train_ml_model(self):
         """Train the ML prediction model with race data."""
         print("Training ML prediction model...")
-        if self.ml_predictor.train(self.frames, self.drivers):
-            self.ml_trained = True
-            self.ml_insights = ["ML model trained successfully!"]
-            print("ML model trained successfully!")
+        
+        # If using NumPy arrays, convert to frames for ML training
+        if self.use_numpy_arrays:
+            # ML predictor can accept NumPy arrays directly
+            if self.ml_predictor.train_from_numpy(
+                self.driver_data_array, self.frame_metadata, self.driver_codes
+            ):
+                self.ml_trained = True
+                self.ml_insights = ["ML model trained successfully!"]
+                print("ML model trained successfully!")
+            else:
+                self.ml_insights = ["ML training failed - insufficient data"]
+                print("ML training failed")
         else:
-            self.ml_insights = ["ML training failed - insufficient data"]
-            print("ML training failed")
+            if self.ml_predictor.train(self.frames, self.drivers):
+                self.ml_trained = True
+                self.ml_insights = ["ML model trained successfully!"]
+                print("ML model trained successfully!")
+            else:
+                self.ml_insights = ["ML training failed - insufficient data"]
+                print("ML training failed")
 
     def _interpolate_points(self, xs, ys, interp_points=2000):
         """Generate smooth points in world coordinates."""
@@ -283,6 +425,9 @@ class F1ReplayWindow(arcade.Window):
         """Handle window resize."""
         super().on_resize(width, height)
         self.update_scaling(width, height)
+        # Invalidate track shapes cache so they get rebuilt with new coordinates
+        self._track_shapes = None
+        self._last_track_status = None
 
     def world_to_screen(self, x, y):
         """Convert world coordinates to screen coordinates."""
@@ -291,7 +436,7 @@ class F1ReplayWindow(arcade.Window):
         return sx, sy
 
     def on_draw(self):
-        """Render the frame."""
+        """Render the frame with optimized batch rendering."""
         self.clear()
 
         # 1. Draw Background
@@ -301,9 +446,9 @@ class F1ReplayWindow(arcade.Window):
                 rect=arcade.LBWH(0, 0, self.width, self.height)
             )
 
-        # 2. Get current frame data
+        # 2. Get current frame data (supports both legacy and NumPy formats)
         idx = min(int(self.frame_index), self.n_frames - 1)
-        frame = self.frames[idx]
+        frame = self._get_current_frame_data(idx)
         current_time = frame["t"]
 
         # Get current track status
@@ -316,22 +461,30 @@ class F1ReplayWindow(arcade.Window):
 
         track_color = STATUS_COLORS.get(current_track_status, (150, 150, 150))
 
-        # 3. Draw Track with enhanced visibility
-        if len(self.screen_inner_points) > 1:
-            arcade.draw_line_strip(self.screen_inner_points, track_color, 3)
-        if len(self.screen_outer_points) > 1:
-            arcade.draw_line_strip(self.screen_outer_points, track_color, 3)
+        # 3. Draw Track using batch rendering (ShapeElementList)
+        # Only rebuild if track status/color changed or shapes don't exist
+        if self._track_shapes is None or self._last_track_status != track_color:
+            self._build_track_shapes(track_color)
+        
+        if self._track_shapes:
+            self._track_shapes.draw()
 
-        # 4. Draw Cars with driver codes
+        # 4. Draw Cars - use batch SpriteList for better performance
+        # Update sprite positions
+        self._update_car_sprites(frame)
+        
+        # Draw all car sprites in one batch call
+        self._car_sprites.draw()
+        
+        # Draw car outlines and labels (these still need individual calls)
         for code, pos in frame["drivers"].items():
+            # rel_dist == 1 indicates car retired/DNF
             if pos.get("rel_dist", 0) == 1:
                 continue
             sx, sy = self.world_to_screen(pos["x"], pos["y"])
-            color = self.driver_colors.get(code, arcade.color.WHITE)
 
-            # Draw car circle with border
-            arcade.draw_circle_filled(sx, sy, 8, color)
-            arcade.draw_circle_outline(sx, sy, 8, arcade.color.WHITE, 2)
+            # Draw car outline
+            arcade.draw_circle_outline(sx, sy, CAR_RADIUS, arcade.color.WHITE, 2)
 
             # Draw driver code label for selected driver or top 3
             position = pos.get("position", 99)
@@ -1038,33 +1191,42 @@ class F1ReplayWindow(arcade.Window):
             self.selected_driver = new_selection
 
 
-def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
+def run_arcade_replay(frames=None, track_statuses=None, example_lap=None, drivers=None, title="F1 Race Replay",
                       playback_speed=1.0, driver_colors=None, predictions=None,
-                      mode='historical', race_info=None):
+                      mode='historical', race_info=None,
+                      driver_data_array=None, frame_metadata=None, driver_codes=None):
     """Run the F1 replay visualization.
 
+    Supports both legacy frame format and optimized NumPy arrays for better performance.
+
     Args:
-        frames: Race telemetry frames
+        frames: Race telemetry frames (legacy format, optional if using NumPy arrays)
         track_statuses: Track status data
         example_lap: Example lap for track geometry
-        drivers: List of driver codes
+        drivers: List of driver codes (used with legacy format)
         title: Window title
         playback_speed: Initial playback speed multiplier
         driver_colors: Dictionary mapping driver codes to RGB colors
         predictions: Optional dictionary of ML predictions
         mode: 'historical' for replays, 'predicted' for future race predictions
         race_info: Dictionary with race information (year, gp, etc.)
+        driver_data_array: NumPy 3D array (n_frames, n_drivers, n_fields) - optimized format
+        frame_metadata: NumPy 2D array (n_frames, 2) with [time, leader_lap] - optimized format
+        driver_codes: List of driver codes (used with NumPy arrays)
     """
     F1ReplayWindow(
         frames=frames,
         track_statuses=track_statuses,
         example_lap=example_lap,
-        drivers=drivers,
+        drivers=drivers or driver_codes,
         playback_speed=playback_speed,
         driver_colors=driver_colors,
         title=title,
         predictions=predictions,
         mode=mode,
-        race_info=race_info
+        race_info=race_info,
+        driver_data_array=driver_data_array,
+        frame_metadata=frame_metadata,
+        driver_codes=driver_codes
     )
     arcade.run()

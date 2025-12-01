@@ -1,6 +1,8 @@
 """
 Machine Learning module for F1 race trend prediction.
 Uses historical race data to predict future race outcomes.
+
+Optimized to work directly with NumPy arrays for better performance.
 """
 
 import numpy as np
@@ -11,11 +13,25 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
+# Import field indices for NumPy array access
+try:
+    from src.f1_data import (
+        FIELD_X, FIELD_Y, FIELD_DIST, FIELD_REL_DIST, FIELD_LAP,
+        FIELD_TYRE, FIELD_SPEED, FIELD_GEAR, FIELD_DRS, FIELD_POSITION
+    )
+except ImportError:
+    # Fallback if running standalone
+    FIELD_X, FIELD_Y, FIELD_DIST, FIELD_REL_DIST = 0, 1, 2, 3
+    FIELD_LAP, FIELD_TYRE, FIELD_SPEED, FIELD_GEAR = 4, 5, 6, 7
+    FIELD_DRS, FIELD_POSITION = 8, 9
+
 
 class RaceTrendPredictor:
     """
     ML-based race trend predictor that analyzes race data
     and predicts future positions, lap times, and pit stop strategies.
+    
+    Supports both legacy frame format and optimized NumPy arrays.
     """
 
     def __init__(self):
@@ -68,6 +84,135 @@ class RaceTrendPredictor:
             targets_laptime.append(future_data.get('speed', 200))
 
         return np.array(features), np.array(targets_position), np.array(targets_laptime)
+
+    def prepare_training_data_numpy(self, driver_data_array, frame_metadata, driver_idx):
+        """
+        Prepare training data directly from NumPy arrays for a specific driver.
+        This is significantly faster than the dictionary-based approach.
+        
+        Args:
+            driver_data_array: NumPy 3D array (n_frames, n_drivers, n_fields)
+            frame_metadata: NumPy 2D array (n_frames, 2) with [time, leader_lap]
+            driver_idx: Index of the driver in the array
+            
+        Returns:
+            Tuple of (features, position_targets, speed_targets) arrays
+        """
+        n_frames = driver_data_array.shape[0]
+        look_ahead = 250  # ~10 seconds at 25 FPS
+        
+        if n_frames <= look_ahead:
+            return np.array([]), np.array([]), np.array([])
+        
+        # Vectorized feature extraction
+        # Current frame indices
+        current_indices = np.arange(n_frames - look_ahead)
+        future_indices = current_indices + look_ahead
+        
+        # Extract current driver data for all frames at once
+        current_data = driver_data_array[current_indices, driver_idx, :]
+        future_data = driver_data_array[future_indices, driver_idx, :]
+        current_metadata = frame_metadata[current_indices, :]
+        
+        # Build feature matrix: [position, lap, tyre, speed, gear, drs_active, dist, rel_dist]
+        # DRS values in FastF1: 0/1=Off, 8=Eligible/Ready, 10/12/14=Active (different states)
+        drs_active = np.where(
+            np.isin(current_data[:, FIELD_DRS].astype(int), [10, 12, 14]),
+            1.0, 0.0
+        )
+        
+        features = np.column_stack([
+            current_data[:, FIELD_POSITION],
+            current_metadata[:, 1],  # leader_lap (proxy for lap number)
+            current_data[:, FIELD_TYRE],
+            current_data[:, FIELD_SPEED],
+            current_data[:, FIELD_GEAR],
+            drs_active,
+            current_data[:, FIELD_DIST],
+            current_data[:, FIELD_REL_DIST],
+        ])
+        
+        # Targets
+        targets_position = future_data[:, FIELD_POSITION]
+        targets_speed = future_data[:, FIELD_SPEED]
+        
+        return features, targets_position, targets_speed
+
+    def train_from_numpy(self, driver_data_array, frame_metadata, driver_codes):
+        """
+        Train the prediction models using NumPy arrays directly.
+        This is significantly faster than the dictionary-based train() method.
+        
+        Args:
+            driver_data_array: NumPy 3D array (n_frames, n_drivers, n_fields)
+            frame_metadata: NumPy 2D array (n_frames, 2) with [time, leader_lap]
+            driver_codes: List of driver codes
+            
+        Returns:
+            True if training succeeded, False otherwise
+        """
+        n_frames = driver_data_array.shape[0]
+        n_drivers = driver_data_array.shape[1]
+        
+        if n_frames < 500:
+            print("Not enough frames for ML training (need at least 500)")
+            return False
+        
+        all_features = []
+        all_position_targets = []
+        all_speed_targets = []
+        
+        for driver_idx in range(n_drivers):
+            features, pos_targets, speed_targets = self.prepare_training_data_numpy(
+                driver_data_array, frame_metadata, driver_idx
+            )
+            if len(features) > 0:
+                all_features.append(features)
+                all_position_targets.append(pos_targets)
+                all_speed_targets.append(speed_targets)
+        
+        if not all_features:
+            print("No training data available")
+            return False
+        
+        X = np.vstack(all_features)
+        y_position = np.concatenate(all_position_targets)
+        y_speed = np.concatenate(all_speed_targets)
+        
+        # Scale features
+        X_scaled = self.scaler.fit_transform(X)
+        
+        # Split data
+        X_train, X_test, y_pos_train, y_pos_test = train_test_split(
+            X_scaled, y_position, test_size=0.2, random_state=42
+        )
+        
+        # Train position prediction model
+        self.position_model = RandomForestRegressor(
+            n_estimators=50,
+            max_depth=10,
+            random_state=42,
+            n_jobs=-1
+        )
+        self.position_model.fit(X_train, y_pos_train)
+        
+        # Train speed prediction model
+        X_train_sp, _, y_sp_train, _ = train_test_split(
+            X_scaled, y_speed, test_size=0.2, random_state=42
+        )
+        self.laptime_model = GradientBoostingRegressor(
+            n_estimators=50,
+            max_depth=5,
+            random_state=42
+        )
+        self.laptime_model.fit(X_train_sp, y_sp_train)
+        
+        # Evaluate
+        pos_score = self.position_model.score(X_test, y_pos_test)
+        print(f"ML Model trained (NumPy) - Position prediction R² score: {pos_score:.3f}")
+        
+        self.is_trained = True
+        return True
 
     def train(self, frames, drivers):
         """

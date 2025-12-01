@@ -9,13 +9,14 @@ Usage:
     python main.py                          # Interactive mode
     python main.py --predict --year 2025 --gp Monaco
     python main.py --replay --year 2024 --gp Monaco
+    python main.py --replay --year 2024 --gp Monaco --legacy  # Use legacy format
 """
 
 import sys
 import argparse
 from tabulate import tabulate
 
-from src.f1_data import get_race_telemetry, load_race_session, enable_cache
+from src.f1_data import get_race_telemetry, get_race_data, load_race_session, enable_cache
 from src.arcade_replay import run_arcade_replay
 from src.simulation import PredictedRaceSimulator, FutureRaceDataProvider
 from src.ml_predictor import PreRacePredictor
@@ -167,8 +168,15 @@ def predict_future_race(year, gp, speed=1.0, train_model=True):
         )
 
 
-def replay_historical_race(year, gp, speed=1.0):
-    """Replay a historical race."""
+def replay_historical_race(year, gp, speed=1.0, use_optimized=True):
+    """Replay a historical race.
+    
+    Args:
+        year: Race year
+        gp: Grand Prix name or round number
+        speed: Playback speed multiplier
+        use_optimized: If True, use NumPy arrays for better performance
+    """
     print(f"\n📼 載入 {year} {gp} 歷史比賽...")
     print("=" * 50)
 
@@ -185,8 +193,48 @@ def replay_historical_race(year, gp, speed=1.0):
         print("常見名稱: Monaco, Silverstone, Monza, Spa, Suzuka 等")
         return
 
-    # Get race telemetry
+    # Get race telemetry - try optimized format first
     print("正在處理遙測數據...")
+    
+    if use_optimized:
+        try:
+            print("📊 Using optimized NumPy data format...")
+            race_data = get_race_data(session)
+            
+            # Get example lap for track layout
+            try:
+                example_lap = session.laps.pick_fastest().get_telemetry()
+            except Exception:
+                example_lap = session.laps.iloc[0].get_telemetry()
+            
+            drivers = race_data['driver_codes']
+            n_frames = race_data['driver_data_array'].shape[0]
+            
+            print(f"\n🏁 開始回放 {event_name}")
+            print(f"📊 車手數量: {len(drivers)}")
+            print(f"📊 總幀數: {n_frames}")
+            print(f"📊 播放速度: {speed}x")
+            print("🚀 使用優化的 NumPy 數據格式 (optimized for performance)")
+            print("\n🎬 開啟回放視窗...")
+            
+            # Run the replay with optimized data
+            run_arcade_replay(
+                track_statuses=race_data['track_statuses'],
+                example_lap=example_lap,
+                playback_speed=speed,
+                driver_colors=race_data['driver_colors'],
+                title=f"{event_name} - F1 Replay with ML (Optimized)",
+                mode='historical',
+                race_info={'year': year, 'gp': gp},
+                driver_data_array=race_data['driver_data_array'],
+                frame_metadata=race_data['frame_metadata'],
+                driver_codes=race_data['driver_codes']
+            )
+            return
+        except Exception as e:
+            print(f"⚠️ 優化格式載入失敗，使用傳統格式: {e}")
+    
+    # Fallback to legacy format
     try:
         race_telemetry = get_race_telemetry(session)
     except Exception as e:
@@ -236,6 +284,7 @@ Examples:
     python main.py                              # Interactive mode
     python main.py --predict --year 2025 --gp Monaco
     python main.py --replay --year 2024 --gp Monaco
+    python main.py --replay --year 2024 --gp Monaco --legacy  # Use legacy format
     python main.py --schedule
         """
     )
@@ -256,6 +305,8 @@ Examples:
                         help='Initial playback speed (default: 1.0)')
     parser.add_argument('--no-train', action='store_true',
                         help='Skip ML model training')
+    parser.add_argument('--legacy', action='store_true',
+                        help='Use legacy dictionary-based data format instead of optimized NumPy format')
 
     return parser.parse_args()
 
@@ -293,6 +344,9 @@ def interactive_mode():
 def main():
     """Main entry point."""
     args = parse_args()
+    
+    # Use optimized format by default, unless --legacy is specified
+    use_optimized = not args.legacy
 
     # Handle command line mode
     if args.schedule:
@@ -314,7 +368,7 @@ def main():
         if gp is None:
             print("錯誤: 請指定 --gp 或 --round")
             sys.exit(1)
-        replay_historical_race(year, gp, args.speed)
+        replay_historical_race(year, gp, args.speed, use_optimized)
         return
 
     # If no mode specified but year/gp provided, use legacy behavior
@@ -326,7 +380,7 @@ def main():
             print("錯誤: 請指定 --gp 或 --round")
             print("範例: python main.py --year 2023 --gp Monaco")
             sys.exit(1)
-        replay_historical_race(year, gp, args.speed)
+        replay_historical_race(year, gp, args.speed, use_optimized)
         return
 
     # Default: interactive mode
