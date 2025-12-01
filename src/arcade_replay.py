@@ -15,8 +15,16 @@ from src.dashboard.prediction_overlay import PredictionOverlay
 
 # Default screen dimensions
 SCREEN_WIDTH = 1920
-SCREEN_HEIGHT = 1200
+SCREEN_HEIGHT = 1080
 SCREEN_TITLE = "F1 Race Replay with ML Prediction"
+
+# UI Layout Constants
+LEADERBOARD_WIDTH = 280
+LEADERBOARD_PADDING = 15
+HUD_PANEL_WIDTH = 250
+HUD_PANEL_HEIGHT = 180
+ML_PANEL_WIDTH = 440
+ML_PANEL_HEIGHT = 200
 
 # Track status color mapping
 STATUS_COLORS = {
@@ -32,6 +40,11 @@ STATUS_COLORS = {
     "6": (200, 130, 50),   # VSC
     "7": (200, 130, 50),   # VSC ending
 }
+
+# Panel colors
+PANEL_BG_COLOR = (20, 20, 30, 200)
+PANEL_BORDER_COLOR = (60, 60, 80)
+HEADER_BG_COLOR = (40, 40, 60, 220)
 
 
 def build_track_from_example_lap(example_lap, track_width=200):
@@ -236,19 +249,36 @@ class F1ReplayWindow(arcade.Window):
 
         track_color = STATUS_COLORS.get(current_track_status, (150, 150, 150))
 
-        # 3. Draw Track
+        # 3. Draw Track with enhanced visibility
         if len(self.screen_inner_points) > 1:
-            arcade.draw_line_strip(self.screen_inner_points, track_color, 4)
+            arcade.draw_line_strip(self.screen_inner_points, track_color, 3)
         if len(self.screen_outer_points) > 1:
-            arcade.draw_line_strip(self.screen_outer_points, track_color, 4)
+            arcade.draw_line_strip(self.screen_outer_points, track_color, 3)
 
-        # 4. Draw Cars
+        # 4. Draw Cars with driver codes
         for code, pos in frame["drivers"].items():
             if pos.get("rel_dist", 0) == 1:
                 continue
             sx, sy = self.world_to_screen(pos["x"], pos["y"])
             color = self.driver_colors.get(code, arcade.color.WHITE)
-            arcade.draw_circle_filled(sx, sy, 6, color)
+
+            # Draw car circle with border
+            arcade.draw_circle_filled(sx, sy, 8, color)
+            arcade.draw_circle_outline(sx, sy, 8, arcade.color.WHITE, 2)
+
+            # Draw driver code label for selected driver or top 3
+            position = pos.get("position", 99)
+            if code == self.selected_driver or position <= 3:
+                # Background for label
+                arcade.draw_rectangle_filled(sx, sy + 18, 28, 14, (0, 0, 0, 180))
+                arcade.Text(
+                    code,
+                    sx, sy + 18,
+                    arcade.color.WHITE,
+                    9,
+                    bold=True,
+                    anchor_x="center", anchor_y="center"
+                ).draw()
 
         # --- UI ELEMENTS ---
         self._draw_hud(frame, current_time, current_track_status)
@@ -262,7 +292,7 @@ class F1ReplayWindow(arcade.Window):
         self.prediction_overlay.draw_tables_view(self.width, self.height, frame)
 
     def _draw_hud(self, frame, current_time, track_status):
-        """Draw heads-up display (lap, time, flags)."""
+        """Draw heads-up display (lap, time, flags) with panel background."""
         # Get leader info
         leader_code = max(
             frame["drivers"],
@@ -277,105 +307,184 @@ class F1ReplayWindow(arcade.Window):
         seconds = int(t % 60)
         time_str = f"{hours:02}:{minutes:02}:{seconds:02}"
 
+        # Draw HUD panel background
+        panel_x = LEADERBOARD_PADDING
+        panel_y = self.height - LEADERBOARD_PADDING - HUD_PANEL_HEIGHT
+        bg_rect = arcade.XYWH(
+            panel_x + HUD_PANEL_WIDTH / 2,
+            panel_y + HUD_PANEL_HEIGHT / 2,
+            HUD_PANEL_WIDTH,
+            HUD_PANEL_HEIGHT
+        )
+        arcade.draw_rect_filled(bg_rect, PANEL_BG_COLOR)
+        arcade.draw_rect_outline(bg_rect, PANEL_BORDER_COLOR, 2)
+
         # Draw predicted race indicator if in predicted mode
         if self.mode == 'predicted':
-            # Draw prediction banner
             gp_name = self.race_info.get('gp', 'Unknown GP')
             year = self.race_info.get('year', 2025)
-            banner_text = f"🔮 PREDICTED RACE - {year} {gp_name}"
+            banner_text = f"🔮 PREDICTED - {year} {gp_name}"
             arcade.Text(banner_text,
-                        self.width / 2, self.height - 25,
-                        arcade.color.CYAN, 20, bold=True,
+                        self.width / 2, self.height - 15,
+                        arcade.color.CYAN, 18, bold=True,
                         anchor_x="center", anchor_y="top").draw()
 
-        # Draw HUD - Top Left
-        arcade.Text(f"Lap: {leader_lap}",
-                    20, self.height - 40,
-                    arcade.color.WHITE, 24, anchor_y="top").draw()
+        # HUD content
+        text_x = panel_x + 15
+        text_y = self.height - LEADERBOARD_PADDING - 20
 
-        arcade.Text(f"Race Time: {time_str}",
-                    20, self.height - 80,
-                    arcade.color.WHITE, 20, anchor_y="top").draw()
+        # Lap counter with larger font
+        arcade.Text(f"LAP {leader_lap}",
+                    text_x, text_y,
+                    arcade.color.WHITE, 28, bold=True, anchor_y="top").draw()
 
-        arcade.Text(f"Speed: {self.playback_speed}x",
-                    20, self.height - 120,
-                    arcade.color.LIGHT_GRAY, 16, anchor_y="top").draw()
+        # Race time
+        arcade.Text(f"⏱ {time_str}",
+                    text_x, text_y - 45,
+                    arcade.color.LIGHT_GRAY, 18, anchor_y="top").draw()
 
-        # Track status flag
+        # Playback speed
+        speed_color = arcade.color.GREEN if self.playback_speed > 1 else (
+            arcade.color.YELLOW if self.playback_speed < 1 else arcade.color.WHITE
+        )
+        arcade.Text(f"▶ {self.playback_speed}x",
+                    text_x, text_y - 75,
+                    speed_color, 16, anchor_y="top").draw()
+
+        # Pause indicator
+        if self.paused:
+            arcade.Text("⏸ PAUSED",
+                        text_x, text_y - 100,
+                        arcade.color.YELLOW, 16, bold=True, anchor_y="top").draw()
+
+        # Track status flag with background
         status_texts = {
-            "2": ("YELLOW FLAG", arcade.color.YELLOW),
-            "4": ("SAFETY CAR", arcade.color.BROWN),
-            "5": ("RED FLAG", arcade.color.RED),
-            "6": ("VIRTUAL SAFETY CAR", arcade.color.ORANGE),
-            "7": ("VSC ENDING", arcade.color.ORANGE),
+            "2": ("⚠ YELLOW FLAG", arcade.color.YELLOW, (80, 80, 0)),
+            "4": ("🚗 SAFETY CAR", arcade.color.ORANGE, (80, 40, 0)),
+            "5": ("🛑 RED FLAG", arcade.color.RED, (80, 0, 0)),
+            "6": ("⚡ VSC", arcade.color.ORANGE, (80, 50, 0)),
+            "7": ("⚡ VSC ENDING", arcade.color.ORANGE, (80, 50, 0)),
         }
 
         if track_status in status_texts:
-            text, color = status_texts[track_status]
+            text, color, bg_color = status_texts[track_status]
+            flag_y = text_y - 130
+            flag_rect = arcade.XYWH(
+                text_x + 100, flag_y + 10,
+                200, 30
+            )
+            arcade.draw_rect_filled(flag_rect, bg_color)
             arcade.Text(text,
-                        20, self.height - 160,
-                        color, 24, bold=True, anchor_y="top").draw()
+                        text_x + 5, flag_y,
+                        color, 18, bold=True, anchor_y="top").draw()
 
     def _draw_leaderboard(self, frame):
-        """Draw the leaderboard on the right side."""
-        leaderboard_x = self.width - 220
-        leaderboard_y = self.height - 40
+        """Draw the leaderboard on the right side with panel background."""
+        num_drivers = len(frame["drivers"])
+        row_height = 26
+        header_height = 40
+        leaderboard_height = header_height + (num_drivers * row_height) + 20
 
-        arcade.Text("Leaderboard", leaderboard_x, leaderboard_y,
-                    arcade.color.WHITE, 20, bold=True, anchor_x="left", anchor_y="top").draw()
+        # Position leaderboard
+        leaderboard_x = self.width - LEADERBOARD_WIDTH - LEADERBOARD_PADDING
+        leaderboard_y = self.height - LEADERBOARD_PADDING
 
+        # Draw panel background
+        bg_rect = arcade.XYWH(
+            leaderboard_x + LEADERBOARD_WIDTH / 2,
+            leaderboard_y - leaderboard_height / 2,
+            LEADERBOARD_WIDTH,
+            leaderboard_height
+        )
+        arcade.draw_rect_filled(bg_rect, PANEL_BG_COLOR)
+        arcade.draw_rect_outline(bg_rect, PANEL_BORDER_COLOR, 2)
+
+        # Draw header background
+        header_rect = arcade.XYWH(
+            leaderboard_x + LEADERBOARD_WIDTH / 2,
+            leaderboard_y - header_height / 2,
+            LEADERBOARD_WIDTH,
+            header_height
+        )
+        arcade.draw_rect_filled(header_rect, HEADER_BG_COLOR)
+
+        # Header text
+        arcade.Text("🏁 LIVE STANDINGS",
+                    leaderboard_x + 10, leaderboard_y - 12,
+                    arcade.color.WHITE, 16, bold=True,
+                    anchor_x="left", anchor_y="top").draw()
+
+        # Prepare driver list
         driver_list = []
         for code, pos in frame["drivers"].items():
             color = self.driver_colors.get(code, arcade.color.WHITE)
             driver_list.append((code, color, pos))
 
-        # Sort by distance
+        # Sort by distance (race position)
         driver_list.sort(key=lambda x: x[2].get("dist", 999), reverse=True)
 
+        # Get leader distance for gap calculation
+        if driver_list:
+            leader_dist = driver_list[0][2].get("dist", 0)
+
         self.leaderboard_rects = []
-        row_height = 25
-        entry_width = 240
 
         for i, (code, color, pos) in enumerate(driver_list):
             current_pos = i + 1
-            if pos.get("rel_dist", 0) == 1:
-                text = f"{current_pos}. {code}   OUT"
-            else:
-                text = f"{current_pos}. {code}"
-
-            top_y = leaderboard_y - 30 - (i * row_height)
+            top_y = leaderboard_y - header_height - 5 - (i * row_height)
             bottom_y = top_y - row_height
-            left_x = leaderboard_x
-            right_x = leaderboard_x + entry_width
+            left_x = leaderboard_x + 5
+            right_x = leaderboard_x + LEADERBOARD_WIDTH - 5
 
             self.leaderboard_rects.append((code, left_x, bottom_y, right_x, top_y))
 
             # Highlight if selected
             if code == self.selected_driver:
-                rect = arcade.XYWH(
-                    (left_x + right_x) / 2,
+                highlight_rect = arcade.XYWH(
+                    leaderboard_x + LEADERBOARD_WIDTH / 2,
                     (top_y + bottom_y) / 2,
-                    right_x - left_x,
-                    top_y - bottom_y
+                    LEADERBOARD_WIDTH - 10,
+                    row_height - 2
                 )
-                arcade.draw_rect_filled(rect, arcade.color.LIGHT_GRAY)
-                text_color = arcade.color.BLACK
-            else:
-                text_color = color
+                arcade.draw_rect_filled(highlight_rect, (70, 70, 100, 180))
 
-            arcade.Text(
-                text, left_x, top_y,
-                text_color, 16,
-                anchor_x="left", anchor_y="top"
-            ).draw()
+            # Position number with background
+            pos_color = (255, 215, 0) if current_pos <= 3 else (100, 100, 100)
+            arcade.draw_circle_filled(left_x + 12, top_y - row_height / 2 + 2, 10, pos_color)
+            arcade.Text(str(current_pos),
+                        left_x + 12, top_y - row_height / 2 + 2,
+                        arcade.color.BLACK if current_pos <= 3 else arcade.color.WHITE,
+                        11, bold=True, anchor_x="center", anchor_y="center").draw()
+
+            # Driver code with team color indicator
+            arcade.draw_rectangle_filled(left_x + 30, top_y - row_height / 2 + 2, 4, 16, color)
+
+            # Check if OUT
+            is_out = pos.get("rel_dist", 0) == 1
+            text_color = arcade.color.GRAY if is_out else arcade.color.WHITE
+
+            driver_text = f"{code}" + (" OUT" if is_out else "")
+            arcade.Text(driver_text,
+                        left_x + 40, top_y - row_height / 2 + 2,
+                        text_color, 13, bold=True,
+                        anchor_x="left", anchor_y="center").draw()
+
+            # Gap to leader
+            if i > 0 and not is_out:
+                gap = leader_dist - pos.get("dist", 0)
+                gap_text = f"+{gap / 1000:.1f}km" if gap > 1000 else f"+{gap:.0f}m"
+                arcade.Text(gap_text,
+                            right_x - 60, top_y - row_height / 2 + 2,
+                            arcade.color.LIGHT_GRAY, 10,
+                            anchor_x="right", anchor_y="center").draw()
 
             # Tyre icon
             tyre_name = get_tyre_compound_str(pos.get("tyre", 1))
             tyre_texture = self._tyre_textures.get(tyre_name.upper())
             if tyre_texture:
-                tyre_icon_x = self.width - 30
-                tyre_icon_y = top_y - 12
-                icon_size = 16
+                tyre_icon_x = right_x - 18
+                tyre_icon_y = top_y - row_height / 2 + 2
+                icon_size = 18
                 rect = arcade.XYWH(tyre_icon_x, tyre_icon_y, icon_size, icon_size)
                 arcade.draw_texture_rect(rect=rect, texture=tyre_texture, angle=0, alpha=255)
 
@@ -392,56 +501,46 @@ class F1ReplayWindow(arcade.Window):
                 merged = {**self.external_predictions, **live_predictions}
                 self.prediction_overlay.update_predictions(merged)
 
-        # Draw overlay for each leaderboard entry
-        leaderboard_x = self.width - 220
-        leaderboard_y = self.height - 40
-        row_height = 25
-        overlay_x = self.width - 55
-
-        driver_list = []
+        # Draw battle highlights on car positions
         for code, pos in frame["drivers"].items():
-            driver_list.append((code, pos))
-        driver_list.sort(key=lambda x: x[1].get("dist", 999), reverse=True)
-
-        for i, (code, pos) in enumerate(driver_list):
-            top_y = leaderboard_y - 30 - (i * row_height)
-
-            # Draw trend indicator
-            self.prediction_overlay.draw_leaderboard_overlay(
-                overlay_x, top_y, code, row_height
-            )
-
-            # Draw pit window indicator
-            current_lap = pos.get('lap', 1)
-            self.prediction_overlay.draw_pit_window_indicator(
-                self.width - 75, top_y - 12, code, current_lap
-            )
-
-            # Draw battle highlight on car position
-            if code in frame["drivers"]:
-                sx, sy = self.world_to_screen(pos["x"], pos["y"])
-                self.prediction_overlay.draw_battle_highlight(sx, sy, code)
+            sx, sy = self.world_to_screen(pos["x"], pos["y"])
+            self.prediction_overlay.draw_battle_highlight(sx, sy, code)
 
     def _draw_controls_legend(self):
-        """Draw controls legend at bottom left."""
-        legend_x = 20
-        legend_y = 175
+        """Draw controls legend at bottom left with panel background."""
         legend_lines = [
-            "Controls:",
-            "[SPACE]  Pause/Resume",
-            "[←/→]    Rewind / FastForward",
-            "[↑/↓]    Speed +/- (0.5x, 1x, 2x, 4x)",
-            "[M]      Toggle ML Panel",
-            "[T]      Toggle Tables View",
+            "⌨ CONTROLS",
+            "SPACE  Pause/Resume",
+            "← / →  Rewind / Forward",
+            "↑ / ↓  Speed +/-",
+            "M      Toggle ML Panel",
+            "T      Toggle Tables",
         ]
 
+        panel_width = 180
+        panel_height = len(legend_lines) * 22 + 15
+        panel_x = LEADERBOARD_PADDING
+        panel_y = LEADERBOARD_PADDING
+
+        # Draw panel background
+        bg_rect = arcade.XYWH(
+            panel_x + panel_width / 2,
+            panel_y + panel_height / 2,
+            panel_width,
+            panel_height
+        )
+        arcade.draw_rect_filled(bg_rect, PANEL_BG_COLOR)
+        arcade.draw_rect_outline(bg_rect, PANEL_BORDER_COLOR, 2)
+
         for i, line in enumerate(legend_lines):
+            text_color = arcade.color.WHITE if i == 0 else arcade.color.LIGHT_GRAY
+            font_size = 12 if i == 0 else 10
             arcade.Text(
                 line,
-                legend_x,
-                legend_y - (i * 25),
-                arcade.color.LIGHT_GRAY if i > 0 else arcade.color.WHITE,
-                14,
+                panel_x + 10,
+                panel_y + panel_height - 15 - (i * 22),
+                text_color,
+                font_size,
                 bold=(i == 0)
             ).draw()
 
@@ -453,10 +552,11 @@ class F1ReplayWindow(arcade.Window):
         driver_pos = frame["drivers"][self.selected_driver]
         driver_color = self.driver_colors.get(self.selected_driver, arcade.color.GRAY)
 
-        info_x = 20
-        info_y = self.height / 2 + 100
-        box_width = 300
-        box_height = 180
+        # Position below HUD panel
+        info_x = LEADERBOARD_PADDING
+        info_y = self.height - LEADERBOARD_PADDING - HUD_PANEL_HEIGHT - 20
+        box_width = 260
+        box_height = 200
 
         # Background box
         bg_rect = arcade.XYWH(
@@ -465,104 +565,152 @@ class F1ReplayWindow(arcade.Window):
             box_width,
             box_height
         )
-        arcade.draw_rect_outline(bg_rect, driver_color)
+        arcade.draw_rect_filled(bg_rect, PANEL_BG_COLOR)
+        arcade.draw_rect_outline(bg_rect, driver_color, 3)
 
-        # Driver name box
-        name_rect = arcade.XYWH(
+        # Driver name header
+        header_rect = arcade.XYWH(
             info_x + box_width / 2,
-            info_y + 20,
+            info_y - 5,
             box_width,
-            40
+            35
         )
-        arcade.draw_rect_filled(name_rect, driver_color)
+        arcade.draw_rect_filled(header_rect, driver_color)
+
+        # Team color bar
+        arcade.draw_rectangle_filled(info_x + 8, info_y - 5, 6, 25, (255, 255, 255))
+
         arcade.Text(
-            f"Driver: {self.selected_driver}",
-            info_x + 10,
-            info_y + 20,
-            arcade.color.BLACK,
-            16,
+            f"  {self.selected_driver}",
+            info_x + 15,
+            info_y - 5,
+            arcade.color.WHITE,
+            18,
+            bold=True,
             anchor_x="left", anchor_y="center"
         ).draw()
 
         # Driver stats
-        speed_text = f"Speed: {driver_pos.get('speed', 0):.1f} km/h"
-        gear_text = f"Gear: {driver_pos.get('gear', 0)}"
-
+        stat_y = info_y - 40
+        speed = driver_pos.get('speed', 0)
+        gear = driver_pos.get('gear', 0)
         drs_value = driver_pos.get('drs', 0)
+        lap = driver_pos.get('lap', 1)
+        tyre = get_tyre_compound_str(driver_pos.get('tyre', 1))
+
+        # DRS status
         if drs_value in [0, 1]:
-            drs_status = "Off"
+            drs_status = ("Off", arcade.color.GRAY)
         elif drs_value == 8:
-            drs_status = "Eligible"
+            drs_status = ("Ready", arcade.color.YELLOW)
         elif drs_value in [10, 12, 14]:
-            drs_status = "On"
+            drs_status = ("ACTIVE", arcade.color.GREEN)
         else:
-            drs_status = "Unknown"
-        drs_text = f"DRS: {drs_status}"
+            drs_status = ("--", arcade.color.GRAY)
 
-        lap_text = f"Current Lap: {driver_pos.get('lap', 1)}"
-        tyre_text = f"Tyre: {get_tyre_compound_str(driver_pos.get('tyre', 1))}"
+        stats = [
+            ("🏎 Speed", f"{speed:.0f} km/h", arcade.color.WHITE),
+            ("⚙ Gear", str(gear), arcade.color.WHITE),
+            ("📡 DRS", drs_status[0], drs_status[1]),
+            ("🔄 Lap", str(lap), arcade.color.WHITE),
+            ("🛞 Tyre", tyre, self._get_tyre_color(tyre)),
+        ]
 
-        # ML Prediction for selected driver
+        for i, (label, value, color) in enumerate(stats):
+            y_pos = stat_y - (i * 28)
+            arcade.Text(label, info_x + 15, y_pos,
+                        arcade.color.LIGHT_GRAY, 12, anchor_y="center").draw()
+            arcade.Text(value, info_x + box_width - 15, y_pos,
+                        color, 13, bold=True, anchor_x="right", anchor_y="center").draw()
+
+        # ML Prediction
         prediction = self.ml_predictor.predict(frame, self.selected_driver) if self.ml_trained else None
         if prediction:
-            pred_text = f"Predicted: P{prediction['predicted_position']:.0f} ({prediction['trend']})"
-        else:
-            pred_text = "Prediction: N/A"
+            trend = prediction['trend']
+            trend_color = (arcade.color.GREEN if trend == 'improving' else
+                           arcade.color.RED if trend == 'declining' else arcade.color.GRAY)
+            pred_text = f"→ P{prediction['predicted_position']:.0f}"
+            arcade.Text("🤖 Prediction", info_x + 15, stat_y - 140,
+                        arcade.color.CYAN, 12, anchor_y="center").draw()
+            arcade.Text(pred_text, info_x + box_width - 15, stat_y - 140,
+                        trend_color, 13, bold=True, anchor_x="right", anchor_y="center").draw()
 
-        stats_lines = [speed_text, gear_text, drs_text, lap_text, tyre_text, pred_text]
-        for i, line in enumerate(stats_lines):
-            arcade.Text(
-                line,
-                info_x + 10,
-                info_y - 20 - (i * 25),
-                arcade.color.WHITE,
-                14,
-                anchor_x="left", anchor_y="center"
-            ).draw()
+    def _get_tyre_color(self, tyre_name):
+        """Get color for tyre compound."""
+        colors = {
+            "SOFT": arcade.color.RED,
+            "MEDIUM": arcade.color.YELLOW,
+            "HARD": arcade.color.WHITE,
+            "INTERMEDIATE": arcade.color.GREEN,
+            "WET": arcade.color.BLUE,
+        }
+        return colors.get(tyre_name.upper(), arcade.color.GRAY)
 
     def _draw_ml_panel(self, frame):
-        """Draw ML prediction panel."""
+        """Draw ML prediction panel at bottom right."""
         if not self.show_ml_panel:
             return
 
-        panel_x = self.width - 450
-        panel_y = 200
-        panel_width = 420
-        panel_height = 180
+        # Position at bottom right, above controls
+        panel_x = self.width - ML_PANEL_WIDTH - LEADERBOARD_PADDING
+        panel_y = LEADERBOARD_PADDING
 
         # Panel background
         bg_rect = arcade.XYWH(
-            panel_x + panel_width / 2,
-            panel_y + panel_height / 2,
-            panel_width,
-            panel_height
+            panel_x + ML_PANEL_WIDTH / 2,
+            panel_y + ML_PANEL_HEIGHT / 2,
+            ML_PANEL_WIDTH,
+            ML_PANEL_HEIGHT
         )
-        arcade.draw_rect_filled(bg_rect, (30, 30, 40, 200))
-        arcade.draw_rect_outline(bg_rect, arcade.color.CYAN)
+        arcade.draw_rect_filled(bg_rect, PANEL_BG_COLOR)
+        arcade.draw_rect_outline(bg_rect, arcade.color.CYAN, 2)
 
-        # Panel title
+        # Panel header
+        header_rect = arcade.XYWH(
+            panel_x + ML_PANEL_WIDTH / 2,
+            panel_y + ML_PANEL_HEIGHT - 18,
+            ML_PANEL_WIDTH,
+            36
+        )
+        arcade.draw_rect_filled(header_rect, (0, 80, 100, 200))
+
         arcade.Text(
-            "🤖 ML Race Prediction",
-            panel_x + 10,
-            panel_y + panel_height - 20,
+            "🤖 ML RACE INSIGHTS",
+            panel_x + 15,
+            panel_y + ML_PANEL_HEIGHT - 18,
             arcade.color.CYAN,
-            18,
+            14,
             bold=True,
             anchor_x="left", anchor_y="center"
+        ).draw()
+
+        # Training status indicator
+        status_color = arcade.color.GREEN if self.ml_trained else arcade.color.YELLOW
+        status_text = "● ACTIVE" if self.ml_trained else "● TRAINING..."
+        arcade.Text(
+            status_text,
+            panel_x + ML_PANEL_WIDTH - 15,
+            panel_y + ML_PANEL_HEIGHT - 18,
+            status_color,
+            11,
+            anchor_x="right", anchor_y="center"
         ).draw()
 
         # Update insights periodically
         if int(self.frame_index) % 50 == 0 and self.ml_trained:
             self.ml_insights = self.ml_predictor.get_race_insights(frame)
 
-        # Draw insights
+        # Draw insights with icons
+        insight_y = panel_y + ML_PANEL_HEIGHT - 50
         for i, insight in enumerate(self.ml_insights[:4]):
+            # Truncate if too long
+            display_text = insight if len(insight) < 55 else insight[:52] + "..."
             arcade.Text(
-                insight,
+                display_text,
                 panel_x + 15,
-                panel_y + panel_height - 55 - (i * 30),
+                insight_y - (i * 32),
                 arcade.color.WHITE,
-                13,
+                12,
                 anchor_x="left", anchor_y="center"
             ).draw()
 
