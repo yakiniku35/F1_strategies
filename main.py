@@ -3,13 +3,14 @@
 F1 Race Prediction Simulator
 ============================
 
-Interactive main entry point for F1 race visualization and prediction.
+Interactive main entry point for F1 race prediction and simulation.
+
+For historical race replays, please use: https://github.com/IAmTomShaw/f1-race-replay
 
 Usage:
     python main.py                          # Interactive mode
     python main.py --predict --year 2025 --gp Monaco
-    python main.py --replay --year 2024 --gp Monaco
-    python main.py --replay --year 2024 --gp Monaco --legacy  # Use legacy format
+    python main.py --schedule               # View race calendar
 """
 
 import sys
@@ -33,6 +34,7 @@ from src.f1_data import get_race_telemetry, get_race_data, load_race_session, en
 from src.arcade_replay import run_arcade_replay
 from src.simulation import PredictedRaceSimulator, FutureRaceDataProvider
 from src.ml_predictor import PreRacePredictor
+from src.replay_wrapper import replay_race_external  # External f1-race-replay integration
 
 
 def print_banner():
@@ -184,110 +186,16 @@ def predict_future_race(year, gp, speed=1.0, train_model=True):
 
 
 def replay_historical_race(year, gp, speed=1.0, use_optimized=True):
-    """Replay a historical race.
+    """Replay a historical race using external f1-race-replay system.
     
     Args:
         year: Race year
         gp: Grand Prix name or round number
-        speed: Playback speed multiplier
-        use_optimized: If True, use NumPy arrays for better performance
+        speed: Playback speed multiplier (not used in external system)
+        use_optimized: Compatibility parameter (not used in external system)
     """
-    print(f"\n📼 載入 {year} {gp} 歷史比賽...")
-    print("=" * 50)
-
-    # Enable FastF1 cache
-    enable_cache()
-
-    try:
-        print("⏳ 正在載入比賽資料...")
-        session = load_race_session(year, gp, 'R')
-        event_name = session.event['EventName']
-        print(f"✅ 載入成功: {event_name} - Round {session.event['RoundNumber']}")
-    except Exception as e:
-        print(f"❌ 載入失敗: {e}")
-        print("\n提示: 請確認年份和大獎賽名稱正確")
-        print("常見名稱: Monaco, Silverstone, Monza, Spa, Suzuka 等")
-        return
-
-    # Get race telemetry - try optimized format first
-    print("⏳ 正在處理遙測數據...")
-    
-    if use_optimized:
-        try:
-            race_data = get_race_data(session)
-            
-            # Get example lap for track layout
-            try:
-                example_lap = session.laps.pick_fastest().get_telemetry()
-            except Exception:
-                example_lap = session.laps.iloc[0].get_telemetry()
-            
-            drivers = race_data['driver_codes']
-            n_frames = race_data['driver_data_array'].shape[0]
-            
-            print(f"\n🏁 準備開始回放")
-            print(f"   車手數量: {len(drivers)}")
-            print(f"   總幀數: {n_frames:,}")
-            print(f"   播放速度: {speed}x")
-            print("   使用優化格式 ✓")
-            print("\n🎬 開啟回放視窗...")
-            
-            # Run the replay with optimized data
-            run_arcade_replay(
-                track_statuses=race_data['track_statuses'],
-                example_lap=example_lap,
-                playback_speed=speed,
-                driver_colors=race_data['driver_colors'],
-                title=f"{event_name} - F1 Replay with ML (Optimized)",
-                mode='historical',
-                race_info={'year': year, 'gp': gp},
-                driver_data_array=race_data['driver_data_array'],
-                frame_metadata=race_data['frame_metadata'],
-                driver_codes=race_data['driver_codes']
-            )
-            return
-        except Exception as e:
-            print(f"⚠️ 優化格式載入失敗，切換到傳統格式")
-    
-    # Fallback to legacy format
-    print("⏳ 使用傳統格式處理...")
-    try:
-        race_telemetry = get_race_telemetry(session)
-    except Exception as e:
-        print(f"❌ 處理遙測數據失敗: {e}")
-        return
-
-    if not race_telemetry['frames']:
-        print("❌ 沒有可用的遙測數據")
-        return
-
-    # Get example lap for track layout
-    try:
-        example_lap = session.laps.pick_fastest().get_telemetry()
-    except Exception:
-        example_lap = session.laps.iloc[0].get_telemetry()
-
-    # Get drivers list
-    drivers = [session.get_driver(num)["Abbreviation"] for num in session.drivers]
-
-    print(f"\n🏁 準備開始回放")
-    print(f"   車手數量: {len(drivers)}")
-    print(f"   總幀數: {len(race_telemetry['frames']):,}")
-    print(f"   播放速度: {speed}x")
-    print("\n🎬 開啟回放視窗...")
-
-    # Run the replay
-    run_arcade_replay(
-        frames=race_telemetry['frames'],
-        track_statuses=race_telemetry['track_statuses'],
-        example_lap=example_lap,
-        drivers=drivers,
-        playback_speed=speed,
-        driver_colors=race_telemetry['driver_colors'],
-        title=f"{event_name} - F1 Replay with ML",
-        mode='historical',
-        race_info={'year': year, 'gp': gp}
-    )
+    # Use the external f1-race-replay system
+    replay_race_external(year, gp, session_type='R')
 
 
 def parse_args():
@@ -299,16 +207,17 @@ def parse_args():
 Examples:
     python main.py                              # Interactive mode
     python main.py --predict --year 2025 --gp Monaco
-    python main.py --replay --year 2024 --gp Monaco
-    python main.py --replay --year 2024 --gp Monaco --legacy  # Use legacy format
+    python main.py --replay --year 2024 --gp Monaco  # Uses f1-race-replay system
     python main.py --schedule
+
+Replay system powered by: https://github.com/IAmTomShaw/f1-race-replay
         """
     )
 
     parser.add_argument('--predict', action='store_true',
                         help='Predict a future race')
     parser.add_argument('--replay', action='store_true',
-                        help='Replay a historical race')
+                        help='Replay a historical race (uses external f1-race-replay)')
     parser.add_argument('--schedule', action='store_true',
                         help='View 2025 schedule')
     parser.add_argument('--year', type=int, default=None,
@@ -321,8 +230,6 @@ Examples:
                         help='Initial playback speed (default: 1.0)')
     parser.add_argument('--no-train', action='store_true',
                         help='Skip ML model training')
-    parser.add_argument('--legacy', action='store_true',
-                        help='Use legacy dictionary-based data format instead of optimized NumPy format')
 
     return parser.parse_args()
 
@@ -340,7 +247,7 @@ def interactive_mode():
         predict_future_race(year, gp)
 
     elif choice == '2':
-        # Replay historical race
+        # Replay historical race (using external f1-race-replay)
         year = get_year_input()
         gp = get_gp_input()
         replay_historical_race(year, gp)
@@ -360,9 +267,6 @@ def interactive_mode():
 def main():
     """Main entry point."""
     args = parse_args()
-    
-    # Use optimized format by default, unless --legacy is specified
-    use_optimized = not args.legacy
 
     # Handle command line mode
     if args.schedule:
@@ -384,22 +288,10 @@ def main():
         if gp is None:
             print("錯誤: 請指定 --gp 或 --round")
             sys.exit(1)
-        replay_historical_race(year, gp, args.speed, use_optimized)
+        replay_historical_race(year, gp, args.speed)
         return
 
-    # If no mode specified but year/gp provided, use legacy behavior
-    if args.year is not None or args.gp is not None or args.round is not None:
-        # Legacy mode - replay historical race
-        year = args.year or 2023
-        gp = args.gp or args.round
-        if gp is None:
-            print("錯誤: 請指定 --gp 或 --round")
-            print("範例: python main.py --year 2023 --gp Monaco")
-            sys.exit(1)
-        replay_historical_race(year, gp, args.speed, use_optimized)
-        return
-
-    # Default: interactive mode
+    # If no mode specified, run interactive mode
     interactive_mode()
 
 
