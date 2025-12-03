@@ -1,39 +1,24 @@
-# F1 Race Replay with ML Prediction 🏎️
+# F1 Race Prediction Simulator 🏎️
 
-A Python application for visualizing Formula 1 race telemetry with real-time machine learning predictions. Built with Arcade graphics library for ultra-smooth 60 FPS performance with advanced frame interpolation.
+A Python application for predicting Formula 1 race outcomes using machine learning and historical data analysis.
 
 ## Features
 
-- **Smooth Race Replay:** Watch races unfold with buttery-smooth 60 FPS rendering and sub-frame interpolation
-- **Optimized Performance:** NumPy-based batch rendering for fluid animation even with 20+ cars
-- **Machine Learning Predictions:** AI-powered predictions for race trends, position changes, and battles
-- **Interactive Leaderboard:** See live driver positions, gaps, intervals, and current tyre compounds
-- **Driver Telemetry:** View speed, gear, DRS status, and lap information for selected drivers
-- **Track Status Indicators:** Yellow flags, Safety Car, Virtual Safety Car, Red flags
-- **Playback Controls:** Pause, rewind, fast forward, and adjust playback speed (0.5x to 8x)
-- **AI Chat Assistant:** Ask questions about F1 strategy, rules, and current race situation 🤖
+- **Race Prediction:** AI-powered predictions for future race outcomes using historical performance data
+- **Machine Learning Models:** Advanced ML models analyzing driver performance, track conditions, and historical trends
+- **Interactive Leaderboard:** View predicted positions, gaps, and performance metrics
+- **Schedule Viewer:** Check upcoming race calendars and event information
+- **Data-Driven Insights:** Predictions based on FastF1 telemetry and historical race data
 
-## Performance Features
+## Historical Race Replay
 
-- **60 FPS Rendering:** VSync-enabled smooth animation
-- **Frame Interpolation:** Sub-frame position interpolation for ultra-smooth car movement
-- **Batch Rendering:** OpenGL sprite batching reduces CPU overhead
-- **NumPy Optimization:** Fast array operations for large datasets
-- **Cached Track Shapes:** Track geometry pre-calculated and reused
+**For watching historical race replays**, we recommend using the excellent [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay) project by IAmTomShaw. It provides a dedicated, feature-rich replay system with:
+- Smooth 60 FPS race visualization
+- Interactive controls and playback speed adjustment
+- Detailed telemetry displays
+- Track status indicators
 
-## Controls
-
-| Key | Action |
-|-----|--------|
-| SPACE | Pause/Resume |
-| ← / → | Rewind / Fast Forward |
-| ↑ / ↓ | Increase / Decrease Speed |
-| 1-4 | Set Speed (0.5x, 1x, 2x, 4x) |
-| M | Toggle ML Prediction Panel |
-| T | Toggle Tables View |
-| C | Open AI Chat (ask questions!) 🤖 |
-| ESC | Close chat panel |
-| Click | Select driver on leaderboard |
+This project focuses on **prediction and simulation** of future races rather than historical replay functionality.
 
 ## Requirements
 
@@ -71,28 +56,24 @@ Run without arguments for an interactive menu:
 python main.py
 ```
 
+You'll see a menu with options to:
+1. 🔮 Predict future races
+2. 📅 View race schedule
+3. ❌ Exit
+
 ### Command Line Mode
 
-Run the replay with a specific race:
+Predict a future race or view the schedule:
 
 ```bash
-# By Grand Prix name (optimized format - faster)
-python main.py --replay --year 2024 --gp Monaco
-
-# By round number
-python main.py --replay --year 2024 --round 7
-
 # Predict a future race
 python main.py --predict --year 2025 --gp Monaco
 
 # View 2025 schedule
 python main.py --schedule
 
-# Custom playback speed
-python main.py --replay --year 2024 --gp Silverstone --speed 2.0
-
-# Use legacy format (slower, for compatibility)
-python main.py --replay --year 2023 --gp Monaco --legacy
+# Predict with custom speed
+python main.py --predict --year 2025 --gp Silverstone --speed 2.0
 ```
 
 ### Command Line Options
@@ -100,39 +81,23 @@ python main.py --replay --year 2023 --gp Monaco --legacy
 | Option | Description |
 |--------|-------------|
 | `--predict` | Predict and simulate a future race |
-| `--replay` | Replay a historical race |
 | `--schedule` | View 2025 F1 calendar |
-| `--year` | Race year (default: 2024) |
+| `--year` | Race year (default: 2025) |
 | `--gp` | Grand Prix name (e.g., Monaco, Silverstone) |
 | `--round` | Round number (alternative to --gp) |
-| `--speed` | Initial playback speed (default: 1.0, max: 8.0) |
-| `--legacy` | Use legacy dict format instead of optimized NumPy arrays |
+| `--speed` | Initial playback speed (default: 1.0) |
 | `--no-train` | Skip ML model training (prediction mode) |
-
-## Performance Tips
-
-1. **Use Optimized Format:** By default, the app uses NumPy arrays for 5-10x better performance
-2. **Adjust Speed:** Use `--speed` to control initial playback (1x = real-time, 2x = double speed)
-3. **Hardware Acceleration:** Ensure GPU drivers are up-to-date for best OpenGL performance
-4. **Cache Directory:** First load is slower (downloading data), subsequent loads are fast (cached)
 
 ## Machine Learning Features
 
-The application includes ML-powered race analysis:
+The application includes ML-powered race prediction:
 
-- **Position Prediction:** Predicts future driver positions based on current pace
-- **Trend Analysis:** Identifies improving/declining drivers
-- **Battle Detection:** Predicts upcoming on-track battles
-- **Strategy Insights:** Pit window recommendations based on tyre degradation
+- **Position Prediction:** Predicts future driver positions based on historical performance
+- **Trend Analysis:** Identifies driver form and performance trends
+- **Strategy Insights:** Analyzes optimal pit stop windows and tyre strategies
+- **Weather Impact:** Considers weather conditions in race predictions
 
-The ML model trains on race data during initialization and provides real-time insights during replay.
-
-## AI Chat Feature 🤖
-
-Press **C** to open the AI Chat panel and ask questions about F1:
-
-- "What's the best tyre strategy?"
-- "Who's likely to win?"
+The ML model trains on historical race data and provides predictions for upcoming races.
 - "Explain DRS"
 - "What's a good pit window?"
 

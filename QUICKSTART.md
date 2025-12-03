@@ -1,6 +1,9 @@
 # Quick Start Guide 🏁
 
-Get started with F1 Race Replay in under 5 minutes!
+Get started with F1 Race Prediction Simulator in under 5 minutes!
+
+> **📼 Looking for race replays?** Use [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay) instead.
+> This project focuses on **predicting future races**.
 
 ## Installation (2 minutes)
 
@@ -24,53 +27,57 @@ python main.py
 ```
 
 Then follow the on-screen menu:
-- Press `2` for Historical Replay
-- Enter year: `2024`
+- Press `1` for Race Prediction
+- Enter year: `2025`
 - Enter GP: `Monaco`
-- Wait for data loading (first time takes 1-2 min)
-- Enjoy the replay! 🎬
+- Watch the AI predict and simulate the race! 🎬
 
-### Option 2: Direct Replay
+### Option 2: Direct Prediction
 
 ```bash
-# Watch the 2024 Monaco Grand Prix
-python main.py --replay --year 2024 --gp Monaco
+# Predict the 2025 Monaco Grand Prix
+python main.py --predict --year 2025 --gp Monaco
 ```
 
-## Controls During Replay
+### Option 3: View Schedule
+
+```bash
+# Check the 2025 F1 calendar
+python main.py --schedule
+```
+
+## Controls During Simulation
 
 | Key | What It Does |
 |-----|--------------|
 | **SPACE** | ⏸️ Pause / ▶️ Resume |
-| **↑** | 🚀 Speed up (2x, 4x, 8x) |
-| **↓** | 🐌 Slow down (0.5x, 0.25x) |
-| **→** | ⏩ Jump forward 10 frames |
-| **←** | ⏪ Rewind 10 frames |
-| **1-4** | Set speed (0.5x, 1x, 2x, 4x) |
+| **↑** | 🚀 Speed up |
+| **↓** | 🐌 Slow down |
+| **→** | ⏩ Jump forward |
+| **←** | ⏪ Rewind |
 | **M** | 🤖 Toggle ML Panel |
-| **C** | 💬 Open AI Chat |
 | **Click** | 👆 Select driver |
 
 ## What You'll See
 
-### On Screen
+### Prediction Simulation
 ```
 ┌─────────────────────────────────────────────────────┐
-│  LAP 45/78                    🏁 LIVE STANDINGS     │
-│  ⏱ 01:23:45 (x2.0)          ├─ P1. VER  🔴         │
-│                               ├─ P2. HAM  +2.3s 🟡  │
-│  🌡️ Track: 42°C              ├─ P3. LEC  +4.1s 🔴  │
-│  💧 Humidity: 65%             └─ ...                │
+│  2025 MONACO GP PREDICTION    🏁 PREDICTED RESULTS  │
+│  🤖 AI-Powered Simulation     ├─ P1. VER  🔴        │
+│                                ├─ P2. LEC  +1.8s 🔴  │
+│  🌡️ Expected: Dry             ├─ P3. NOR  +3.2s 🟠  │
+│  🏎️ Grid: Based on 2024       └─ ...                │
 │                                                      │
 │         ╔════════════╗                              │
-│         ║   TRACK    ║   ← Race happening here!    │
+│         ║   TRACK    ║   ← Simulation running       │
 │         ║ 🏎️ 🏎️ 🏎️  ║                              │
 │         ╚════════════╝                              │
 │                                                      │
-│  ⌨️ CONTROLS          🤖 ML RACE INSIGHTS           │
-│  [SPACE] Pause        ● VER leading by 2.3s        │
-│  [←/→] Rewind/Fwd     ● Close battle for P5-P7     │
-│  [↑/↓] Speed +/-      ● HAM gaining 0.1s/lap       │
+│  🤖 ML RACE INSIGHTS                                │
+│  ● VER favored by historical data                   │
+│  ● Ferrari strong at Monaco                         │
+│  ● Close battle predicted for P3-P5                 │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -88,93 +95,79 @@ Qatar, United States, Mexico, Brazil, Las Vegas, Abu Dhabi
 ## Quick Examples
 
 ```bash
-# Classic races
-python main.py --replay --year 2024 --gp Monaco      # Monaco GP
-python main.py --replay --year 2024 --gp Silverstone # British GP
-python main.py --replay --year 2024 --gp Spa         # Belgian GP
-
-# Fast playback (2x speed)
-python main.py --replay --year 2024 --gp Monaco --speed 2.0
-
-# Predict a 2025 race
+# Predict future races
 python main.py --predict --year 2025 --gp Monaco
+python main.py --predict --year 2025 --gp Silverstone
+python main.py --predict --year 2025 --gp Spa
 
 # View 2025 schedule
 python main.py --schedule
+
+# Interactive mode
+python main.py
+```
+
+## For Historical Race Replays
+
+Use the dedicated replay tool instead:
+
+```bash
+# Clone and install f1-race-replay
+git clone https://github.com/IAmTomShaw/f1-race-replay.git
+cd f1-race-replay
+pip install -r requirements.txt
+
+# Replay historical races
+python main.py --year 2024 --gp Monaco
 ```
 
 ## Tips for Best Experience
 
 ### First Time Users
-1. ✅ Start with Monaco (short track, loads faster)
-2. ✅ Use 2x speed for quicker viewing
-3. ✅ Click on drivers to see their telemetry
-4. ✅ Press `M` to see ML predictions
+1. ✅ Start with Monaco (interesting track for predictions)
+2. ✅ Watch the ML model analyze historical data
+3. ✅ Press `M` to see detailed ML predictions
+4. ✅ Try different Grand Prix to compare predictions
 
 ### Performance Tips
-1. 🚀 Don't use `--legacy` flag (optimized is faster)
-2. 🚀 Close other apps for better FPS
-3. 🚀 Maximize window for better view
-4. 🚀 Update GPU drivers if stuttering
+1. 🚀 Close other apps for better performance
+2. 🚀 First run downloads historical data (1-2 min)
+3. 🚀 Subsequent predictions are faster (cached data)
 
 ### Cool Features to Try
-1. 💬 Press `C` and ask "What's DRS?"
-2. 📊 Press `T` to see data tables
-3. 👆 Click drivers to track them
-4. ⚡ Use number keys (1-4) for instant speed change
+1. 📊 Compare predictions across different circuits
+2. 🤖 Explore ML insights panel (press `M`)
+3. 📅 Check full 2025 calendar (`--schedule`)
+4. ⚡ Experiment with different years and tracks
 
 ## Troubleshooting
 
-### "No module named 'arcade'"
+### "No module named 'sklearn'"
 ```bash
-pip install arcade>=3.0.0
+pip install scikit-learn
 ```
 
 ### "Session not found"
-Check GP name spelling or try round number instead:
-```bash
-python main.py --replay --year 2024 --round 6
-```
+- For future races: This is expected! The model predicts based on historical data
+- For past races: Try using [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay) instead
 
 ### Slow loading first time
-Normal! FastF1 downloads telemetry data (1-2 min). Subsequent loads are fast (cached).
-
-### Low FPS
-1. Close background apps
-2. Try smaller window size
-3. Reduce speed to 1x
+Normal! FastF1 downloads historical telemetry data (1-2 min). Subsequent runs are fast (cached).
 
 ## What's Next?
 
-- 🏆 Try different races and seasons
-- 🤖 Explore ML predictions (press `M`)
-- 💬 Chat with AI about F1 (press `C`)
-- 📊 View detailed tables (press `T`)
-- 🎯 Select drivers and track their battle
+- 🏆 Try predicting different 2025 races
+- 🤖 Explore ML prediction insights (press `M`)
+- 📊 Compare predictions across circuits
+- 📅 Check upcoming race schedule
 
 ## Need Help?
 
 - 📖 Full docs: [README.md](README.md)
-- 🚀 Performance guide: [PERFORMANCE.md](PERFORMANCE.md)
+- 📝 Migration guide: [MIGRATION.md](MIGRATION.md)
 - 💾 Check [CHANGELOG.md](CHANGELOG.md) for updates
 - 🐛 Report issues on GitHub
-
-## API Key (Optional)
-
-For full AI chat features, set your Groq API key:
-
-```bash
-# Linux/Mac
-export GROQ_API_KEY=your_key_here
-
-# Windows (PowerShell)
-$env:GROQ_API_KEY="your_key_here"
-
-# Or create .env file
-echo "GROQ_API_KEY=your_key_here" > .env
-```
-
-Basic offline Q&A works without a key!
+- 📼 For replays: [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay)
 
 ---
 
