@@ -19,7 +19,10 @@ FPS = 25  # Display frame rate (frames per second during playback)
 DT = 1 / FPS
 
 # Interpolation multiplier for smoother data
-INTERPOLATION_FACTOR = 4  # Generate 4x more frames for ultra-smooth animation
+# Higher values = more frames between telemetry points = smoother animation
+# Values: 2 (50 FPS), 4 (100 FPS), 8 (200 FPS), 10 (250 FPS)
+# Recommended: 4-8 for best balance of smoothness and performance
+INTERPOLATION_FACTOR = 8  # Generate 8x more frames for ultra-smooth animation (200 internal FPS)
 
 # Field indices for the NumPy 3D driver data array
 # Array structure: (n_frames, n_drivers, n_fields)

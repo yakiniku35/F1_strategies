@@ -183,12 +183,23 @@ tyre_texture = self._tyre_textures.get(compound_name)
 The `INTERPOLATION_FACTOR` constant controls animation smoothness:
 
 ```python
-INTERPOLATION_FACTOR = 4  # Generate 4x more frames
+INTERPOLATION_FACTOR = 8  # Generate 8x more frames (200 internal FPS)
 ```
 
-- **Higher values** → Smoother animation, more memory
-- **Lower values** → Less smooth, less memory
-- **Recommended:** 4 (good balance)
+- **Higher values** → Smoother animation, more memory, more frames
+- **Lower values** → Less smooth, less memory, fewer frames
+- **Default:** 8 (excellent smoothness)
+- **Options:** 2 (basic), 4 (good), 8 (excellent), 10 (ultra-smooth)
+
+### Frame Generation
+
+With `INTERPOLATION_FACTOR = 8`:
+- Base telemetry: 25 FPS
+- Generated frames: 25 × 8 = **200 FPS internally**
+- Between each pair of telemetry points: **7 interpolated frames**
+- Display: 60 FPS (VSync locked)
+
+**Result:** Ultra-smooth animation even at low telemetry sampling rates!
 
 ## Rendering Pipeline
 
