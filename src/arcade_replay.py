@@ -112,7 +112,7 @@ class F1ReplayWindow(arcade.Window):
                  driver_data_array: Optional[np.ndarray] = None,
                  frame_metadata: Optional[np.ndarray] = None,
                  driver_codes: Optional[List[str]] = None):
-        super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
+        super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True, vsync=True, update_rate=1/60)
 
         self.track_statuses = track_statuses
         self.playback_speed = playback_speed
@@ -237,19 +237,23 @@ class F1ReplayWindow(arcade.Window):
         """Build static track geometry as ShapeElementList for batch rendering.
         
         Only regenerate when track status (color) changes.
+        Uses adaptive line width based on track scale for better visual quality.
         """
         self._track_shapes = arcade.shape_list.ShapeElementList()
+        
+        # Adaptive line width based on world scale (looks better at different zoom levels)
+        line_width = max(2, min(4, int(self.world_scale * 0.5)))
         
         # Create line strips for inner and outer track edges
         if len(self.screen_inner_points) > 1:
             inner_line = arcade.shape_list.create_line_strip(
-                self.screen_inner_points, track_color, 3
+                self.screen_inner_points, track_color, line_width
             )
             self._track_shapes.append(inner_line)
         
         if len(self.screen_outer_points) > 1:
             outer_line = arcade.shape_list.create_line_strip(
-                self.screen_outer_points, track_color, 3
+                self.screen_outer_points, track_color, line_width
             )
             self._track_shapes.append(outer_line)
         
@@ -285,8 +289,14 @@ class F1ReplayWindow(arcade.Window):
             # Legacy frame format
             return self.frames[frame_idx]
 
-    def _update_car_sprites(self, frame: dict):
-        """Update car sprite positions for batch rendering."""
+    def _update_car_sprites(self, frame: dict, next_frame: dict = None, interpolation: float = 0.0):
+        """Update car sprite positions for batch rendering with interpolation.
+        
+        Args:
+            frame: Current frame data
+            next_frame: Next frame data for interpolation (optional)
+            interpolation: Interpolation factor between frames (0.0 to 1.0)
+        """
         for code, pos in frame["drivers"].items():
             if code not in self._car_sprite_map:
                 continue
@@ -299,7 +309,18 @@ class F1ReplayWindow(arcade.Window):
                 continue
             
             sprite.visible = True
-            sx, sy = self.world_to_screen(pos["x"], pos["y"])
+            
+            # Interpolate position if next frame is available
+            if next_frame and code in next_frame["drivers"] and interpolation > 0.0:
+                next_pos = next_frame["drivers"][code]
+                # Linear interpolation between current and next frame
+                x = pos["x"] + (next_pos["x"] - pos["x"]) * interpolation
+                y = pos["y"] + (next_pos["y"] - pos["y"]) * interpolation
+            else:
+                x = pos["x"]
+                y = pos["y"]
+            
+            sx, sy = self.world_to_screen(x, y)
             sprite.center_x = sx
             sprite.center_y = sy
 
@@ -441,9 +462,16 @@ class F1ReplayWindow(arcade.Window):
             )
 
         # 2. Get current frame data (supports both legacy and NumPy formats)
-        idx = min(int(self.frame_index), self.n_frames - 1)
+        # Use fractional frame index for smoother interpolation
+        idx = int(self.frame_index)
+        idx = min(idx, self.n_frames - 1)
         frame = self._get_current_frame_data(idx)
         current_time = frame["t"]
+        
+        # Calculate interpolation factor for smooth animation
+        next_idx = min(idx + 1, self.n_frames - 1)
+        interpolation = self.frame_index - idx
+        next_frame = self._get_current_frame_data(next_idx) if interpolation > 0.0 and next_idx != idx else None
 
         # Get current track status
         current_track_status = "1"  # Default green
@@ -464,8 +492,8 @@ class F1ReplayWindow(arcade.Window):
             self._track_shapes.draw()
 
         # 4. Draw Cars - use batch SpriteList for better performance
-        # Update sprite positions
-        self._update_car_sprites(frame)
+        # Update sprite positions with interpolation for smoother movement
+        self._update_car_sprites(frame, next_frame, interpolation)
         
         # Draw all car sprites in one batch call
         self._car_sprites.draw()
@@ -475,7 +503,17 @@ class F1ReplayWindow(arcade.Window):
             # rel_dist == 1 indicates car retired/DNF
             if pos.get("rel_dist", 0) == 1:
                 continue
-            sx, sy = self.world_to_screen(pos["x"], pos["y"])
+            
+            # Interpolate position for smooth labels
+            if next_frame and code in next_frame["drivers"] and interpolation > 0.0:
+                next_pos = next_frame["drivers"][code]
+                x = pos["x"] + (next_pos["x"] - pos["x"]) * interpolation
+                y = pos["y"] + (next_pos["y"] - pos["y"]) * interpolation
+            else:
+                x = pos["x"]
+                y = pos["y"]
+            
+            sx, sy = self.world_to_screen(x, y)
 
             # Draw car outline
             arcade.draw_circle_outline(sx, sy, CAR_RADIUS, arcade.color.WHITE, 2)
@@ -1140,13 +1178,19 @@ class F1ReplayWindow(arcade.Window):
         self.chat_messages.append({"role": "assistant", "content": response})
 
     def on_update(self, delta_time: float):
-        """Update game state."""
+        """Update game state with smooth frame interpolation."""
         if self.paused:
             return
-        # Account for interpolation factor when updating frame index
-        self.frame_index += delta_time * FPS * INTERPOLATION_FACTOR * self.playback_speed
+        # Smooth frame advancement using delta_time for consistent speed
+        # INTERPOLATION_FACTOR already built into frame generation, so multiply by it
+        frame_increment = delta_time * FPS * INTERPOLATION_FACTOR * self.playback_speed
+        self.frame_index += frame_increment
+        
+        # Clamp to valid range
         if self.frame_index >= self.n_frames:
             self.frame_index = float(self.n_frames - 1)
+        elif self.frame_index < 0:
+            self.frame_index = 0.0
 
     def on_key_press(self, symbol: int, modifiers: int):
         """Handle keyboard input."""
