@@ -1,15 +1,25 @@
 # F1 Race Replay with ML Prediction 🏎️
 
-A Python application for visualizing Formula 1 race telemetry with real-time machine learning predictions. Built with Arcade graphics library for smooth performance.
+A Python application for visualizing Formula 1 race telemetry with real-time machine learning predictions. Built with Arcade graphics library for ultra-smooth 60 FPS performance with advanced frame interpolation.
 
 ## Features
 
-- **Race Replay Visualization:** Watch races unfold with real-time driver positions on a rendered track
+- **Smooth Race Replay:** Watch races unfold with buttery-smooth 60 FPS rendering and sub-frame interpolation
+- **Optimized Performance:** NumPy-based batch rendering for fluid animation even with 20+ cars
 - **Machine Learning Predictions:** AI-powered predictions for race trends, position changes, and battles
-- **Interactive Leaderboard:** See live driver positions and current tyre compounds
+- **Interactive Leaderboard:** See live driver positions, gaps, intervals, and current tyre compounds
 - **Driver Telemetry:** View speed, gear, DRS status, and lap information for selected drivers
 - **Track Status Indicators:** Yellow flags, Safety Car, Virtual Safety Car, Red flags
-- **Playback Controls:** Pause, rewind, fast forward, and adjust playback speed
+- **Playback Controls:** Pause, rewind, fast forward, and adjust playback speed (0.5x to 8x)
+- **AI Chat Assistant:** Ask questions about F1 strategy, rules, and current race situation 🤖
+
+## Performance Features
+
+- **60 FPS Rendering:** VSync-enabled smooth animation
+- **Frame Interpolation:** Sub-frame position interpolation for ultra-smooth car movement
+- **Batch Rendering:** OpenGL sprite batching reduces CPU overhead
+- **NumPy Optimization:** Fast array operations for large datasets
+- **Cached Track Shapes:** Track geometry pre-calculated and reused
 
 ## Controls
 
@@ -53,32 +63,58 @@ A Python application for visualizing Formula 1 race telemetry with real-time mac
 
 ## Usage
 
+### Interactive Mode (Recommended)
+
+Run without arguments for an interactive menu:
+
+```bash
+python main.py
+```
+
+### Command Line Mode
+
 Run the replay with a specific race:
 
 ```bash
-# By Grand Prix name
-python main.py --year 2023 --gp Monaco
+# By Grand Prix name (optimized format - faster)
+python main.py --replay --year 2024 --gp Monaco
 
 # By round number
-python main.py --year 2023 --round 7
+python main.py --replay --year 2024 --round 7
 
-# With custom options
-python main.py --year 2024 --gp Silverstone --speed 2.0
+# Predict a future race
+python main.py --predict --year 2025 --gp Monaco
 
-# Force refresh telemetry data
-python main.py --year 2023 --gp Monaco --refresh-data
+# View 2025 schedule
+python main.py --schedule
+
+# Custom playback speed
+python main.py --replay --year 2024 --gp Silverstone --speed 2.0
+
+# Use legacy format (slower, for compatibility)
+python main.py --replay --year 2023 --gp Monaco --legacy
 ```
 
 ### Command Line Options
 
 | Option | Description |
 |--------|-------------|
-| `--year` | Race year (default: 2023) |
+| `--predict` | Predict and simulate a future race |
+| `--replay` | Replay a historical race |
+| `--schedule` | View 2025 F1 calendar |
+| `--year` | Race year (default: 2024) |
 | `--gp` | Grand Prix name (e.g., Monaco, Silverstone) |
 | `--round` | Round number (alternative to --gp) |
-| `--session` | Session type: R, Q, FP1, FP2, FP3 (default: R) |
-| `--speed` | Initial playback speed (default: 1.0) |
-| `--refresh-data` | Force refresh of telemetry data |
+| `--speed` | Initial playback speed (default: 1.0, max: 8.0) |
+| `--legacy` | Use legacy dict format instead of optimized NumPy arrays |
+| `--no-train` | Skip ML model training (prediction mode) |
+
+## Performance Tips
+
+1. **Use Optimized Format:** By default, the app uses NumPy arrays for 5-10x better performance
+2. **Adjust Speed:** Use `--speed` to control initial playback (1x = real-time, 2x = double speed)
+3. **Hardware Acceleration:** Ensure GPU drivers are up-to-date for best OpenGL performance
+4. **Cache Directory:** First load is slower (downloading data), subsequent loads are fast (cached)
 
 ## Machine Learning Features
 
