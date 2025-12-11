@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 F1 Race Prediction Simulator
-============================
+=============================
 
 Interactive main entry point for F1 race prediction and simulation.
 
