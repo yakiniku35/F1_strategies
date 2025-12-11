@@ -22,7 +22,14 @@ from src.ai_chat import F1AIChat
 
 # Fix for macOS recursion error in pyglet/cocoapy
 if sys.platform == 'darwin':
-    sys.setrecursionlimit(10000)
+    import resource
+    # Increase recursion limit for macOS
+    sys.setrecursionlimit(50000)
+    # Also increase stack size if possible
+    try:
+        resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    except:
+        pass
 
 # Default screen dimensions (1080p for better compatibility)
 SCREEN_WIDTH = 1920
