@@ -7,6 +7,7 @@ Optimized for performance with batch rendering and NumPy data access.
 """
 
 import os
+import sys
 import arcade
 import numpy as np
 from typing import Optional, Union, List
@@ -18,6 +19,10 @@ from src.ml_predictor import RaceTrendPredictor
 from src.lib.tyres import get_tyre_compound_str
 from src.dashboard.prediction_overlay import PredictionOverlay
 from src.ai_chat import F1AIChat
+
+# Fix for macOS recursion error in pyglet/cocoapy
+if sys.platform == 'darwin':
+    sys.setrecursionlimit(10000)
 
 # Default screen dimensions (1080p for better compatibility)
 SCREEN_WIDTH = 1920

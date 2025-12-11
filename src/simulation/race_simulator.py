@@ -431,6 +431,8 @@ class PredictedRaceSimulator:
                     self.STABLE_SPEED_VARIATION_MIN, self.STABLE_SPEED_VARIATION_MAX)
                 driver_lap_gears[key] = random.randint(4, 7)
 
+        # Pre-compute keyframe positions (positions at lap boundaries)
+        lap_keyframes = {}
         for lap_idx, lap_result in enumerate(lap_results):
             lap = lap_result["lap"]
             positions = lap_result["positions"]
@@ -439,41 +441,56 @@ class PredictedRaceSimulator:
             next_positions = {}
             if lap_idx + 1 < len(lap_results):
                 next_positions = lap_results[lap_idx + 1]["positions"]
+            
+            # Calculate positions at start and end of this lap
+            lap_keyframes[lap] = {}
+            for code, position in positions.items():
+                base_offset = driver_base_offsets.get(code, 0)
+                quali_pos = qualifying_grid_map.get(code, position)
+                
+                # Start of lap position
+                position_adjustment_start = (quali_pos - position) * 0.005
+                track_progress_start = (0.0 - base_offset + position_adjustment_start) % 1.0
+                x_start, y_start = self.track_manager.interpolate_position(track_layout, track_progress_start)
+                
+                # End of lap position (need to consider if position changes)
+                next_pos = next_positions.get(code, position) if next_positions else position
+                position_adjustment_end = (quali_pos - next_pos) * 0.005
+                track_progress_end = (1.0 - base_offset + position_adjustment_end) % 1.0
+                x_end, y_end = self.track_manager.interpolate_position(track_layout, track_progress_end)
+                
+                lap_keyframes[lap][code] = {
+                    'start': {'x': x_start, 'y': y_start, 'position': position, 'track_progress': track_progress_start},
+                    'end': {'x': x_end, 'y': y_end, 'position': next_pos, 'track_progress': track_progress_end}
+                }
 
+        # Generate frames with constant velocity interpolation between keyframes
+        for lap_idx, lap_result in enumerate(lap_results):
+            lap = lap_result["lap"]
+            positions = lap_result["positions"]
+            
             # Simulate movement through this lap
             for frame_num in range(self.FRAMES_PER_LAP):
-                # Progress within this lap (0 to 1)
+                # Progress within this lap (0 to 1) - linear for constant velocity
                 lap_progress = frame_num / self.FRAMES_PER_LAP
 
                 frame_drivers = {}
                 for code, position in positions.items():
-                    # Calculate track progress based on lap and frame progress
-                    # Base offset separates cars, progress moves them around track
-                    base_offset = driver_base_offsets.get(code, 0)
+                    # Get keyframe data for this driver
+                    if lap not in lap_keyframes or code not in lap_keyframes[lap]:
+                        continue
                     
-                    # Smooth position interpolation between laps
-                    current_pos = position
-                    next_pos = next_positions.get(code, position) if next_positions else position
+                    keyframe = lap_keyframes[lap][code]
+                    start = keyframe['start']
+                    end = keyframe['end']
                     
-                    # Interpolate position change smoothly across the lap
-                    if next_pos != current_pos:
-                        # Apply position change gradually throughout the lap
-                        position_diff = next_pos - current_pos
-                        # Use easing function for more natural overtaking
-                        ease_progress = lap_progress * lap_progress * (3 - 2 * lap_progress)  # Smoothstep
-                        interpolated_pos = current_pos + position_diff * ease_progress
-                    else:
-                        interpolated_pos = current_pos
+                    # Linear interpolation for constant velocity between keyframes
+                    x = start['x'] + (end['x'] - start['x']) * lap_progress
+                    y = start['y'] + (end['y'] - start['y']) * lap_progress
+                    track_progress = start['track_progress'] + (end['track_progress'] - start['track_progress']) * lap_progress
                     
-                    # Adjust offset by position difference from grid
-                    quali_pos = qualifying_grid_map.get(code, position)
-                    position_adjustment = (quali_pos - interpolated_pos) * 0.005
-                    
-                    # Track progress: combines lap progress with position-based offset
-                    track_progress = (lap_progress - base_offset + position_adjustment) % 1.0
-
-                    # Get x, y from track layout
-                    x, y = self.track_manager.interpolate_position(track_layout, track_progress)
+                    # Smooth position number interpolation for overtakes
+                    interpolated_pos = start['position'] + (end['position'] - start['position']) * lap_progress
 
                     # Get tyre compound
                     pit_strategy = race_prediction["pit_strategies"].get(code, [])
