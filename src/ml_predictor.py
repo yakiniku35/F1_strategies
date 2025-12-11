@@ -6,6 +6,10 @@ Optimized to work directly with NumPy arrays for better performance.
 """
 
 import numpy as np
+import pickle
+import os
+import hashlib
+from pathlib import Path
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -34,13 +38,15 @@ class RaceTrendPredictor:
     Supports both legacy frame format and optimized NumPy arrays.
     """
 
-    def __init__(self):
+    def __init__(self, cache_dir: str = "cache/ml_models"):
         self.position_model = None
         self.laptime_model = None
         self.scaler = StandardScaler()
         self.is_trained = False
         self.predictions = {}
         self.prediction_history = []
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def prepare_training_data(self, frames, driver_code):
         """
@@ -212,6 +218,49 @@ class RaceTrendPredictor:
         
         self.is_trained = True
         return True
+
+    def _get_cache_key(self, data_identifier: str) -> str:
+        """Generate cache key from data identifier."""
+        return hashlib.md5(data_identifier.encode()).hexdigest()
+
+    def save_model(self, cache_key: str):
+        """Save trained model to cache."""
+        if not self.is_trained:
+            return False
+        
+        cache_file = self.cache_dir / f"{cache_key}.pkl"
+        try:
+            model_data = {
+                'position_model': self.position_model,
+                'laptime_model': self.laptime_model,
+                'scaler': self.scaler,
+                'is_trained': self.is_trained
+            }
+            with open(cache_file, 'wb') as f:
+                pickle.dump(model_data, f)
+            return True
+        except Exception as e:
+            print(f"⚠️  無法儲存模型: {e}")
+            return False
+
+    def load_model(self, cache_key: str) -> bool:
+        """Load trained model from cache."""
+        cache_file = self.cache_dir / f"{cache_key}.pkl"
+        if not cache_file.exists():
+            return False
+        
+        try:
+            with open(cache_file, 'rb') as f:
+                model_data = pickle.load(f)
+            
+            self.position_model = model_data['position_model']
+            self.laptime_model = model_data['laptime_model']
+            self.scaler = model_data['scaler']
+            self.is_trained = model_data['is_trained']
+            return True
+        except Exception as e:
+            print(f"⚠️  無法載入模型: {e}")
+            return False
 
     def train(self, frames, drivers):
         """
@@ -452,12 +501,14 @@ class PreRacePredictor:
         'Sauber': 7.5,
     }
 
-    def __init__(self):
+    def __init__(self, cache_dir: str = "cache/ml_models"):
         """Initialize the pre-race predictor."""
         self.model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
         self.scaler = StandardScaler()
         self.is_trained = False
         self.training_years = []
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def prepare_historical_data(self, year: int):
         """
@@ -517,6 +568,56 @@ class PreRacePredictor:
 
         return np.array(X_train), np.array(y_train)
 
+    def _get_cache_key(self, years: list) -> str:
+        """Generate cache key from training years."""
+        years_str = "_".join(str(y) for y in sorted(years))
+        return f"prerace_model_{years_str}"
+
+    def save_model(self, years: list):
+        """Save trained model to cache."""
+        if not self.is_trained:
+            return False
+        
+        cache_key = self._get_cache_key(years)
+        cache_file = self.cache_dir / f"{cache_key}.pkl"
+        
+        try:
+            model_data = {
+                'model': self.model,
+                'scaler': self.scaler,
+                'is_trained': self.is_trained,
+                'training_years': self.training_years
+            }
+            with open(cache_file, 'wb') as f:
+                pickle.dump(model_data, f)
+            print(f"✅ 模型已儲存至快取")
+            return True
+        except Exception as e:
+            print(f"⚠️  無法儲存模型: {e}")
+            return False
+
+    def load_model(self, years: list) -> bool:
+        """Load trained model from cache."""
+        cache_key = self._get_cache_key(years)
+        cache_file = self.cache_dir / f"{cache_key}.pkl"
+        
+        if not cache_file.exists():
+            return False
+        
+        try:
+            with open(cache_file, 'rb') as f:
+                model_data = pickle.load(f)
+            
+            self.model = model_data['model']
+            self.scaler = model_data['scaler']
+            self.is_trained = model_data['is_trained']
+            self.training_years = model_data['training_years']
+            print(f"✅ 從快取載入模型 (訓練年份: {', '.join(map(str, years))})")
+            return True
+        except Exception as e:
+            print(f"⚠️  無法載入模型: {e}")
+            return False
+
     def train_on_historical_data(self, years: list = None):
         """
         Train the model on multiple years of historical data.
@@ -529,6 +630,10 @@ class PreRacePredictor:
         """
         if years is None:
             years = [2023, 2024]
+
+        # Try loading from cache first
+        if self.load_model(years):
+            return True
 
         all_X = []
         all_y = []
@@ -556,6 +661,9 @@ class PreRacePredictor:
         self.model.fit(X_scaled, y_combined)
         self.is_trained = True
         self.training_years = years
+
+        # Save to cache
+        self.save_model(years)
 
         return True
 
