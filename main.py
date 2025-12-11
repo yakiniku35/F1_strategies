@@ -159,6 +159,25 @@ def predict_future_race(year, gp, speed=1.0, train_model=True):
 
     headers = ['排名', '車手', '姓名', '車隊', '預測信心度']
     print(tabulate(table_data, headers=headers, tablefmt='grid'))
+    
+    # Show strategy recommendations
+    print("\n🎯 推薦策略 (Recommended Strategies):")
+    print("=" * 50)
+    
+    # Get strategy options for a top driver
+    if len(qualifying) > 0:
+        top_driver = qualifying[0]
+        print(f"\n針對 {top_driver['name']} ({top_driver['code']}) - P{top_driver['grid']}:")
+        try:
+            strategy_comparison = simulator.get_strategy_comparison(
+                top_driver['code'], 
+                top_driver['grid']
+            )
+            print(strategy_comparison)
+        except Exception as e:
+            print(f"⚠️ 策略分析暫時無法使用")
+    
+    print("\n💡 提示: 使用 'python main.py --strategy' 進行詳細策略分析")
 
     # Ask user if they want to run simulation
     print("\n是否開啟賽道模擬視窗？(y/n): ", end="")
@@ -260,6 +279,15 @@ def analyze_race_strategy():
             strategies = analyzer.generate_strategy_options(current_position)
             comparison = analyzer.compare_strategies(strategies)
             print(comparison)
+            
+            # Ask if user wants to export
+            export_choice = input("\n匯出策略? Export strategies? (y=JSON/c=CSV/n=No): ").strip().lower()
+            if export_choice == 'y':
+                filename = f"strategy_{track_name}_{total_laps}laps.json"
+                analyzer.export_strategies_to_json(strategies, filename)
+            elif export_choice == 'c':
+                filename = f"strategy_{track_name}_{total_laps}laps.csv"
+                analyzer.export_strategies_to_csv(strategies, filename)
             
         elif analysis_choice == '2':
             # Undercut analysis

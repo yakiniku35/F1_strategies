@@ -13,6 +13,10 @@ computed_data/
 # Output directory for generated tables
 output/
 
+# Strategy export files
+strategy_*.json
+strategy_*.csv
+
 # C extensions
 *.so
 

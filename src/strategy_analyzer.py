@@ -452,3 +452,87 @@ class StrategyAnalyzer:
             return f"⏰ PREPARE TO PIT: {remaining} laps remaining on these tyres"
         else:
             return f"✅ STAY OUT: Tyres healthy, manage to lap {current_lap + (compound_life[1] - tyre_age)}"
+    
+    def export_strategies_to_json(self, strategies: List[StrategyOption], filepath: str) -> bool:
+        """
+        Export strategy options to JSON file.
+        
+        Args:
+            strategies: List of strategy options
+            filepath: Path to output JSON file
+            
+        Returns:
+            True if export successful, False otherwise
+        """
+        import json
+        import os
+        
+        try:
+            # Convert strategies to dictionary format
+            strategies_dict = {
+                "track": self.track_name,
+                "total_laps": self.total_laps,
+                "strategies": [
+                    {
+                        "name": s.name,
+                        "stops": s.stops,
+                        "pit_laps": s.pit_laps,
+                        "compounds": s.compounds,
+                        "estimated_time": s.estimated_time,
+                        "risk_level": s.risk_level,
+                        "description": s.description
+                    }
+                    for s in strategies
+                ]
+            }
+            
+            # Ensure directory exists
+            output_dir = os.path.dirname(filepath) or '.'
+            os.makedirs(output_dir, exist_ok=True)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(strategies_dict, f, indent=2)
+            
+            print(f"✅ Strategies exported to: {filepath}")
+            return True
+            
+        except (IOError, OSError) as e:
+            print(f"❌ Error exporting strategies: {e}")
+            return False
+    
+    def export_strategies_to_csv(self, strategies: List[StrategyOption], filepath: str) -> bool:
+        """
+        Export strategy options to CSV file.
+        
+        Args:
+            strategies: List of strategy options
+            filepath: Path to output CSV file
+            
+        Returns:
+            True if export successful, False otherwise
+        """
+        import os
+        
+        try:
+            # Ensure directory exists
+            output_dir = os.path.dirname(filepath) or '.'
+            os.makedirs(output_dir, exist_ok=True)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                # Write header
+                f.write("Name,Stops,Pit Laps,Compounds,Est. Time (s),Risk Level,Description\n")
+                
+                # Write strategy data
+                for s in strategies:
+                    pit_laps_str = ';'.join(map(str, s.pit_laps))
+                    compounds_str = ';'.join(s.compounds)
+                    description_clean = s.description.replace(',', ';')
+                    
+                    f.write(f'"{s.name}",{s.stops},"{pit_laps_str}","{compounds_str}",{s.estimated_time:.1f},{s.risk_level},"{description_clean}"\n')
+            
+            print(f"✅ Strategies exported to: {filepath}")
+            return True
+            
+        except (IOError, OSError) as e:
+            print(f"❌ Error exporting strategies: {e}")
+            return False
