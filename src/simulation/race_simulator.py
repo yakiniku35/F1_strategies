@@ -434,6 +434,11 @@ class PredictedRaceSimulator:
         for lap_idx, lap_result in enumerate(lap_results):
             lap = lap_result["lap"]
             positions = lap_result["positions"]
+            
+            # Get next lap positions for smooth interpolation
+            next_positions = {}
+            if lap_idx + 1 < len(lap_results):
+                next_positions = lap_results[lap_idx + 1]["positions"]
 
             # Simulate movement through this lap
             for frame_num in range(self.FRAMES_PER_LAP):
@@ -445,9 +450,24 @@ class PredictedRaceSimulator:
                     # Calculate track progress based on lap and frame progress
                     # Base offset separates cars, progress moves them around track
                     base_offset = driver_base_offsets.get(code, 0)
-                    # Adjust offset by position difference from grid to create overtaking effect
+                    
+                    # Smooth position interpolation between laps
+                    current_pos = position
+                    next_pos = next_positions.get(code, position) if next_positions else position
+                    
+                    # Interpolate position change smoothly across the lap
+                    if next_pos != current_pos:
+                        # Apply position change gradually throughout the lap
+                        position_diff = next_pos - current_pos
+                        # Use easing function for more natural overtaking
+                        ease_progress = lap_progress * lap_progress * (3 - 2 * lap_progress)  # Smoothstep
+                        interpolated_pos = current_pos + position_diff * ease_progress
+                    else:
+                        interpolated_pos = current_pos
+                    
+                    # Adjust offset by position difference from grid
                     quali_pos = qualifying_grid_map.get(code, position)
-                    position_adjustment = (quali_pos - position) * 0.005  # Small adjustment for overtakes
+                    position_adjustment = (quali_pos - interpolated_pos) * 0.005
                     
                     # Track progress: combines lap progress with position-based offset
                     track_progress = (lap_progress - base_offset + position_adjustment) % 1.0
@@ -469,9 +489,16 @@ class PredictedRaceSimulator:
                     base_speed = driver_lap_speeds.get(speed_key, self.BASE_SPEED)
                     base_gear = driver_lap_gears.get(speed_key, 5)
                     
-                    # Add small per-frame variation for realism (but much smaller than before)
-                    frame_speed = base_speed + random.uniform(
-                        -self.FRAME_SPEED_VARIATION, self.FRAME_SPEED_VARIATION)
+                    # Get next lap speed for smooth interpolation
+                    next_speed_key = (code, lap + 1)
+                    next_base_speed = driver_lap_speeds.get(next_speed_key, base_speed)
+                    
+                    # Interpolate speed smoothly between laps
+                    interpolated_speed = base_speed + (next_base_speed - base_speed) * lap_progress
+                    
+                    # Add very small per-frame variation for realism (reduced for smoother animation)
+                    frame_speed = interpolated_speed + random.uniform(
+                        -self.FRAME_SPEED_VARIATION * 0.5, self.FRAME_SPEED_VARIATION * 0.5)
                     
                     frame_drivers[code] = {
                         "x": x,
