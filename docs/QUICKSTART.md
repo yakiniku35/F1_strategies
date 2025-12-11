@@ -164,8 +164,8 @@ Normal! FastF1 downloads historical telemetry data (1-2 min). Subsequent runs ar
 ## Need Help?
 
 - 📖 Full docs: [README.md](README.md)
-- 📝 Migration guide: [MIGRATION.md](MIGRATION.md)
-- 💾 Check [CHANGELOG.md](CHANGELOG.md) for updates
+- 📝 Migration guide: [MIGRATION.md](./MIGRATION.md)
+- 💾 Check [CHANGELOG.md](./CHANGELOG.md) for updates
 - 🐛 Report issues on GitHub
 - 📼 For replays: [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay)
 
