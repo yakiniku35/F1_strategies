@@ -6,6 +6,11 @@ A Python application for predicting Formula 1 race outcomes using machine learni
 
 - **Race Prediction:** AI-powered predictions for future race outcomes using historical performance data
 - **Machine Learning Models:** Advanced ML models analyzing driver performance, track conditions, and historical trends
+- **Strategy Analysis:** Comprehensive pit stop strategy optimization and comparison tools
+  - One-stop vs Two-stop strategy comparison
+  - Undercut/Overcut opportunity detection
+  - Fuel strategy simulation
+  - Track-specific tyre degradation analysis
 - **Interactive Leaderboard:** View predicted positions, gaps, and performance metrics
 - **Schedule Viewer:** Check upcoming race calendars and event information
 - **Data-Driven Insights:** Predictions based on FastF1 telemetry and historical race data
@@ -58,12 +63,14 @@ python main.py
 
 You'll see a menu with options to:
 1. 🔮 Predict future races
-2. 📅 View race schedule
-3. ❌ Exit
+2. 📼 Replay historical races
+3. 📅 View race schedule
+4. 🎯 Strategy analysis
+5. ❌ Exit
 
 ### Command Line Mode
 
-Predict a future race or view the schedule:
+Predict a future race, analyze strategies, or view the schedule:
 
 ```bash
 # Predict a future race
@@ -71,6 +78,9 @@ python main.py --predict --year 2025 --gp Monaco
 
 # View 2025 schedule
 python main.py --schedule
+
+# Run strategy analysis
+python main.py --strategy --track Silverstone --laps 52
 
 # Predict with custom speed
 python main.py --predict --year 2025 --gp Silverstone --speed 2.0
@@ -82,11 +92,43 @@ python main.py --predict --year 2025 --gp Silverstone --speed 2.0
 |--------|-------------|
 | `--predict` | Predict and simulate a future race |
 | `--schedule` | View 2025 F1 calendar |
+| `--strategy` | Run race strategy analysis |
 | `--year` | Race year (default: 2025) |
 | `--gp` | Grand Prix name (e.g., Monaco, Silverstone) |
 | `--round` | Round number (alternative to --gp) |
+| `--track` | Track name for strategy analysis |
+| `--laps` | Total laps for strategy analysis (default: 50) |
 | `--speed` | Initial playback speed (default: 1.0) |
 | `--no-train` | Skip ML model training (prediction mode) |
+
+## Strategy Analysis Features
+
+The application includes comprehensive race strategy tools:
+
+### Strategy Comparison
+Compare multiple pit stop strategies with estimated race times:
+- **Aggressive One-Stop:** Early pit for track position
+- **Conservative One-Stop:** Balanced approach with later pit
+- **Two-Stop Sprint:** Maximum pace with fresh tyre advantage
+- **Alternative Strategies:** Custom combinations based on race situation
+
+### Undercut/Overcut Analysis
+Detect strategic opportunities during the race:
+- **Undercut Detection:** Analyze if pitting before your rival is advantageous
+- **Overcut Analysis:** Determine if staying out longer can gain positions
+- Real-time gap analysis and tyre advantage calculations
+
+### Fuel Strategy Simulation
+Optimize fuel management for race performance:
+- Lap-by-lap fuel weight impact on lap times
+- Identify optimal push periods when car is lightest
+- Calculate fuel penalty through the race
+
+### Track-Specific Analysis
+Strategy recommendations adapt to circuit characteristics:
+- High-stress tracks (Silverstone, Suzuka): Conservative strategies
+- Low-stress tracks (Monza, Bahrain): Aggressive strategies
+- Tyre degradation modeling based on track type
 
 ## Machine Learning Features
 
