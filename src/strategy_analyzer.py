@@ -125,7 +125,7 @@ class StrategyAnalyzer:
                 [early_pit_lap], ["SOFT", "HARD"]
             ),
             risk_level="MEDIUM",
-            description=f"Pit early (lap {early_pit_lap}), push on softs then manage hards to the end"
+            description=f"Early pit lap {early_pit_lap}, push softs then manage hards"
         ))
         
         # Strategy 2: Conservative One-Stop (Later pit)
@@ -154,7 +154,7 @@ class StrategyAnalyzer:
                 [first_stop, second_stop], ["SOFT", "MEDIUM", "SOFT"]
             ),
             risk_level="HIGH",
-            description=f"Maximum pace, pit laps {first_stop} & {second_stop}, fresh tyres advantage"
+            description=f"Max pace, pit laps {first_stop} & {second_stop}, fresh tyre edge"
         ))
         
         # Strategy 4: Alternative One-Stop (Medium start)
@@ -168,7 +168,7 @@ class StrategyAnalyzer:
                 [mid_pit_lap], ["MEDIUM", "HARD"]
             ),
             risk_level="LOW",
-            description=f"Safe strategy, start on mediums, switch to hards lap {mid_pit_lap}"
+            description=f"Safe strategy, start mediums, switch hards lap {mid_pit_lap}"
         ))
         
         # If in top 5, add aggressive undercut strategy
@@ -394,12 +394,31 @@ class StrategyAnalyzer:
         
         for i, strat in enumerate(strategies, 1):
             time_delta = strat.estimated_time - strategies[0].estimated_time
-            result += f"║ {i}. {strat.name:<25} ║\n"
-            result += f"║    Stops: {strat.stops}  |  Risk: {strat.risk_level:<8}           ║\n"
-            result += f"║    Compounds: {' → '.join(strat.compounds):<36} ║\n"
-            result += f"║    Pit Laps: {', '.join(map(str, strat.pit_laps)):<39} ║\n"
-            result += f"║    Est. Time: {self._format_time(strat.estimated_time):<10} (+{time_delta:.1f}s)         ║\n"
-            result += f"║    {strat.description:<54} ║\n"
+            
+            # Strategy name line
+            name_text = f"{i}. {strat.name}"
+            result += f"║ {name_text:<24} ║\n"
+            
+            # Stops and Risk line
+            stops_risk = f"Stops: {strat.stops}  |  Risk: {strat.risk_level:<8}"
+            result += f"║    {stops_risk:<54} ║\n"
+            
+            # Compounds line (using ASCII arrow instead of Unicode)
+            compounds_text = ' -> '.join(strat.compounds)
+            result += f"║    Compounds: {compounds_text:<44} ║\n"
+            
+            # Pit Laps line
+            pit_laps_text = ', '.join(map(str, strat.pit_laps))
+            result += f"║    Pit Laps: {pit_laps_text:<46} ║\n"
+            
+            # Estimated time line
+            time_str = self._format_time(strat.estimated_time)
+            time_text = f"Est. Time: {time_str:<10} (+{time_delta:.1f}s)"
+            result += f"║    {time_text:<54} ║\n"
+            
+            # Description line (may need wrapping if too long)
+            desc_text = strat.description[:58]  # Truncate if too long
+            result += f"║    {desc_text:<54} ║\n"
             result += "╠══════════════════════════════════════════════════════════════╣\n"
         
         result += "╚══════════════════════════════════════════════════════════════╝\n"
