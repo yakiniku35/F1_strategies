@@ -79,6 +79,11 @@ class PredictedRaceSimulator:
         # Initialize race dynamics manager
         location = self.race_info.get("location", "default") if self.race_info else "default"
         self.dynamics = RaceDynamicsManager(track_name=location)
+        
+        # Initialize strategy analyzer
+        from src.strategy_analyzer import StrategyAnalyzer
+        total_laps = self.race_info.get("laps", 50) if self.race_info else 50
+        self.strategy_analyzer = StrategyAnalyzer(track_name=location, total_laps=total_laps)
 
     def get_qualifying_results(self) -> list:
         """
@@ -695,3 +700,30 @@ class PredictedRaceSimulator:
             confidences[code] = round(confidence, 2)
 
         return confidences
+    
+    def get_strategy_options(self, driver_code: str, current_position: int = 10) -> list:
+        """
+        Get strategy options for a specific driver.
+        
+        Args:
+            driver_code: Driver abbreviation
+            current_position: Current race position
+            
+        Returns:
+            List of strategy options from the strategy analyzer
+        """
+        return self.strategy_analyzer.generate_strategy_options(current_position)
+    
+    def get_strategy_comparison(self, driver_code: str, current_position: int = 10) -> str:
+        """
+        Get formatted strategy comparison for a driver.
+        
+        Args:
+            driver_code: Driver abbreviation
+            current_position: Current race position
+            
+        Returns:
+            Formatted strategy comparison string
+        """
+        strategies = self.get_strategy_options(driver_code, current_position)
+        return self.strategy_analyzer.compare_strategies(strategies)
