@@ -10,7 +10,6 @@ Provides comprehensive race strategy analysis including:
 - Alternative strategy comparison
 """
 
-import random
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
@@ -62,6 +61,22 @@ class StrategyAnalyzer:
         "medium": 1.0,  # Normal tracks
         "low": 0.7,     # Easy on tyres (e.g., Monza)
     }
+    
+    # Base lap times by track (seconds) - used for strategy time estimation
+    TRACK_BASE_LAP_TIMES = {
+        "Monaco": 75.0,
+        "Singapore": 88.0,
+        "Hungary": 78.0,
+        "Zandvoort": 72.0,
+        "Silverstone": 87.0,
+        "Spa": 105.0,
+        "Monza": 81.0,
+        "Suzuka": 88.0,
+        "default": 90.0
+    }
+    
+    # Undercut analysis constants
+    MAX_UNDERCUT_GAP = 5.0  # Maximum gap (seconds) for viable undercut
     
     def __init__(self, track_name: str = "default", total_laps: int = 50):
         """
@@ -183,7 +198,7 @@ class StrategyAnalyzer:
         
         Args:
             pit_laps: List of laps to pit on
-            compounds: List of compounds (one more than pit_laps)
+            compounds: List of compounds (should be one more than pit_laps, or will default to MEDIUM for first stint)
             
         Returns:
             Estimated total race time in seconds
@@ -191,7 +206,8 @@ class StrategyAnalyzer:
         total_time = 0.0
         current_lap = 1
         
-        # Add starting compound if not specified
+        # If compounds list doesn't match expected size (pit_laps + 1), add default starting compound
+        # This handles cases where only pit stop compounds are specified
         if len(compounds) == len(pit_laps):
             compounds = ["MEDIUM"] + compounds
         
@@ -199,8 +215,8 @@ class StrategyAnalyzer:
             compound = compounds[i]
             stint_length = pit_lap - current_lap
             
-            # Calculate stint time
-            base_lap_time = 90.0  # Base lap time in seconds
+            # Get track-specific base lap time
+            base_lap_time = self.TRACK_BASE_LAP_TIMES.get(self.track_name, self.TRACK_BASE_LAP_TIMES["default"])
             compound_delta = self.COMPOUND_PACE.get(compound, 0.0)
             degradation_rate = self.COMPOUND_DEGRADATION.get(compound, 0.02) * self.tyre_stress
             
@@ -233,11 +249,11 @@ class StrategyAnalyzer:
             Dictionary with undercut analysis
         """
         # Undercut is viable if:
-        # 1. Gap is close (< 5 seconds)
+        # 1. Gap is close (< MAX_UNDERCUT_GAP seconds)
         # 2. Our tyres are relatively fresh compared to theirs
         # 3. We're in optimal pit window
         
-        gap_score = max(0, 5.0 - gap_to_car_ahead) / 5.0  # 0-1 score
+        gap_score = max(0, self.MAX_UNDERCUT_GAP - gap_to_car_ahead) / self.MAX_UNDERCUT_GAP  # 0-1 score
         tyre_advantage = max(0, their_tyre_age - our_tyre_age) / 10.0  # 0-1 score
         
         # Check if in optimal window for our compound
@@ -245,7 +261,7 @@ class StrategyAnalyzer:
         
         undercut_score = (gap_score * 0.5 + tyre_advantage * 0.3 + (0.2 if in_window else 0))
         
-        viable = undercut_score > 0.5 and gap_to_car_ahead < 5.0
+        viable = undercut_score > 0.5 and gap_to_car_ahead < self.MAX_UNDERCUT_GAP
         
         return {
             "viable": viable,
@@ -502,7 +518,7 @@ class StrategyAnalyzer:
     
     def export_strategies_to_csv(self, strategies: List[StrategyOption], filepath: str) -> bool:
         """
-        Export strategy options to CSV file.
+        Export strategy options to CSV file using proper CSV escaping.
         
         Args:
             strategies: List of strategy options
@@ -511,6 +527,7 @@ class StrategyAnalyzer:
         Returns:
             True if export successful, False otherwise
         """
+        import csv
         import os
         
         try:
@@ -518,17 +535,27 @@ class StrategyAnalyzer:
             output_dir = os.path.dirname(filepath) or '.'
             os.makedirs(output_dir, exist_ok=True)
             
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.writer(f)
+                
                 # Write header
-                f.write("Name,Stops,Pit Laps,Compounds,Est. Time (s),Risk Level,Description\n")
+                writer.writerow(['Name', 'Stops', 'Pit Laps', 'Compounds', 'Est. Time (s)', 'Risk Level', 'Description'])
                 
                 # Write strategy data
                 for s in strategies:
-                    pit_laps_str = ';'.join(map(str, s.pit_laps))
-                    compounds_str = ';'.join(s.compounds)
-                    description_clean = s.description.replace(',', ';')
+                    # Use proper list representation for pit laps and compounds
+                    pit_laps_str = ', '.join(map(str, s.pit_laps))
+                    compounds_str = ' → '.join(s.compounds)
                     
-                    f.write(f'"{s.name}",{s.stops},"{pit_laps_str}","{compounds_str}",{s.estimated_time:.1f},{s.risk_level},"{description_clean}"\n')
+                    writer.writerow([
+                        s.name,
+                        s.stops,
+                        pit_laps_str,
+                        compounds_str,
+                        f'{s.estimated_time:.1f}',
+                        s.risk_level,
+                        s.description
+                    ])
             
             print(f"✅ Strategies exported to: {filepath}")
             return True
