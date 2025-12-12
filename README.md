@@ -132,12 +132,22 @@ Strategy recommendations adapt to circuit characteristics:
 
 ## Machine Learning Features
 
-The application includes ML-powered race prediction:
+The application includes ML-powered race prediction with **Enhanced Models** (New!):
 
+### Standard ML Model
 - **Position Prediction:** Predicts future driver positions based on historical performance
 - **Trend Analysis:** Identifies driver form and performance trends
 - **Strategy Insights:** Analyzes optimal pit stop windows and tyre strategies
 - **Weather Impact:** Considers weather conditions in race predictions
+
+### Enhanced ML Model (Recommended)
+- **🎯 Ensemble Learning:** Combines Random Forest, Gradient Boosting, and XGBoost for superior accuracy
+- **📊 Driver Form Tracking:** Analyzes recent performance trends, momentum, and consistency
+- **🎲 Confidence Intervals:** Provides prediction ranges with uncertainty quantification
+- **🏁 Track-Specific Features:** Adapts predictions based on circuit type (street, high-speed, technical)
+- **⚡ Smart Caching:** Trains once, loads instantly on subsequent runs
+
+See [Enhanced ML Documentation](docs/ENHANCED_ML.md) for detailed features and usage.
 
 The ML model trains on historical race data and provides predictions for upcoming races.
 - "Explain DRS"
