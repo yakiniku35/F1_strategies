@@ -647,7 +647,7 @@ class PreRacePredictor:
                 print(f"   ✓ {year}: {len(X)} 個數據點")
 
         if not all_X:
-            print("❌ 訓練失敗：沒有足夠的歷史數據")
+            print(" 訓練失敗：沒有足夠的歷史數據")
             return False
 
         X_combined = np.vstack(all_X)
