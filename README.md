@@ -1,5 +1,7 @@
 # F1 Race Prediction Simulator 🏎️
 
+**English** | [繁體中文](README.zh-TW.md)
+
 A Python application for predicting Formula 1 race outcomes using machine learning and historical data analysis.
 
 ## Features
