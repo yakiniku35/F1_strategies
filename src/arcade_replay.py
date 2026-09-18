@@ -56,6 +56,47 @@ ML_INSIGHT_MAX_LENGTH = 55
 
 # Car rendering constants
 CAR_RADIUS = 8  # Radius of car circles on track
+CAR_OUTLINE_WIDTH = 2  # Thickness of the white ring drawn around each car
+
+# --- Animation / frame pacing -------------------------------------------------
+# Playback is driven by a floating point ``frame_index``: its integer part picks
+# a stored telemetry frame and its fractional part blends towards the next one.
+# How smooth the replay looks therefore depends on two things - how evenly that
+# index advances, and how cheap a single rendered frame is.
+
+# Arcade schedules both on_update() and on_draw() at this rate. Pinning the draw
+# rate as well as the update rate keeps the two loops in step; otherwise arcade
+# falls back to drawing "as fast as possible", which produces uneven pacing.
+TARGET_FPS = 60
+
+# A single slow tick (garbage collection, a window drag, a slow ML call) makes
+# arcade report the whole stall as one huge delta_time. Advancing playback by
+# that raw value teleports the cars across the track, so cap what one update may
+# consume - the replay falls slightly behind real time instead of jumping.
+MAX_FRAME_DELTA = 1.0 / 15.0  # seconds
+
+# Even on a healthy 60 Hz display the deltas wobble (16.1 ms, 17.4 ms, 15.9 ms).
+# Advancing by the raw value turns that wobble into visible shimmer, so we
+# advance by an exponential moving average instead. The average converges to the
+# true frame time, so playback speed stays accurate - only the jitter is lost.
+DELTA_SMOOTHING = 0.12  # 0.0 = never adapt, 1.0 = no smoothing at all
+
+# How much race time the left/right arrow keys skip. Expressed in seconds
+# because the number of stored frames per second depends on INTERPOLATION_FACTOR.
+SEEK_SECONDS = 3.0
+
+# Expensive machine-learning work is thrown out of on_draw() and throttled by
+# wall-clock time here, so a slow model call can never stall a rendered frame.
+ML_PREDICTION_INTERVAL = 1.0  # seconds between live position predictions
+ML_INSIGHT_INTERVAL = 2.0     # seconds between insight-text refreshes
+
+# Telemetry columns holding a continuous quantity may be blended between two
+# stored frames. Everything else is a discrete state where blending would
+# produce nonsense such as "lap 12.4" or a fractional tyre compound id, so those
+# columns are copied from the current frame unchanged.
+DISCRETE_FIELDS = (
+    FIELD_REL_DIST, FIELD_LAP, FIELD_TYRE, FIELD_GEAR, FIELD_DRS, FIELD_POSITION,
+)
 
 # Track status color mapping
 STATUS_COLORS = {
@@ -124,14 +165,41 @@ class F1ReplayWindow(arcade.Window):
                  driver_data_array: Optional[np.ndarray] = None,
                  frame_metadata: Optional[np.ndarray] = None,
                  driver_codes: Optional[List[str]] = None):
-        super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True, vsync=True, update_rate=1/60)
+        # vsync stops the screen tearing; pinning update_rate *and* draw_rate keeps
+        # the simulation step and the render step on the same even cadence.
+        super().__init__(
+            SCREEN_WIDTH, SCREEN_HEIGHT, title,
+            resizable=True,
+            vsync=True,
+            update_rate=1 / TARGET_FPS,
+            draw_rate=1 / TARGET_FPS,
+        )
 
         self.track_statuses = track_statuses
         self.playback_speed = playback_speed
         self.driver_colors = driver_colors or {}
-        self.frame_index = 0.0
         self.paused = False
         self._tyre_textures = {}
+
+        # --- Animation state -------------------------------------------------
+        # Fractional on purpose: int(frame_index) selects the stored frame and the
+        # remainder is the blend factor towards the next one (see _get_frame_state).
+        self.frame_index = 0.0
+        # Low-pass filtered frame delta used to advance frame_index (see on_update).
+        self._smoothed_delta = 1.0 / TARGET_FPS
+        # Wall-clock seconds since the window opened; drives the throttles below.
+        self._elapsed_time = 0.0
+        self._next_prediction_time = 0.0
+        self._next_insight_time = 0.0
+        # Memoised _get_frame_state() result, so the six panels drawn in a single
+        # frame share one computation - and therefore agree on every position.
+        self._frame_state_cache_key = None
+        self._frame_state_cache = None
+        # Long-lived arcade.Text objects keyed by call site (see _get_text()).
+        self._text_cache = {}
+        self._text_colors = {}
+        # Cached ML prediction for the selected driver, refreshed on a timer.
+        self._selected_driver_prediction = None
 
         # Mode: 'historical' or 'predicted'
         self.mode = mode
@@ -148,6 +216,9 @@ class F1ReplayWindow(arcade.Window):
             self.drivers = self.driver_codes
             # Create driver code to index mapping for fast lookup
             self._driver_idx_map = {code: idx for idx, code in enumerate(self.driver_codes)}
+            # Pre-built index array for restoring the non-blendable columns after
+            # a vectorised interpolation (see _build_state_from_arrays).
+            self._discrete_field_idx = np.array(DISCRETE_FIELDS, dtype=np.intp)
             # Legacy frames not needed
             self.frames = None
         else:
@@ -200,9 +271,10 @@ class F1ReplayWindow(arcade.Window):
         self._track_shapes: Optional[arcade.shape_list.ShapeElementList] = None
         self._last_track_status = None  # Track the last status to detect changes
 
-        # Batch rendering - Car sprites
+        # Batch rendering - Car sprites (body + outline, see _init_car_sprites)
         self._car_sprites: Optional[arcade.SpriteList] = None
-        self._car_sprite_map: dict = {}  # Maps driver code to sprite
+        self._car_outline_sprites: Optional[arcade.SpriteList] = None
+        self._car_sprite_map: dict = {}  # Maps driver code to (outline, body)
         self._init_car_sprites()
 
         # ML Prediction
@@ -228,22 +300,81 @@ class F1ReplayWindow(arcade.Window):
             self._train_ml_model()
         else:
             self.ml_insights = ["🔮 Running in prediction mode"]
+            # Nothing to train on in prediction mode, but the panels treat this
+            # flag as "outputs are usable"; insights come from
+            # _generate_predicted_insights() instead of the model.
             self.ml_trained = True
-            # Store last update time for predicted insights
-            self._last_insight_update = 0
 
     def _init_car_sprites(self):
-        """Initialize car sprites for batch rendering."""
+        """Create the sprites used to draw the cars.
+
+        Each car is two stacked sprites: a slightly larger white circle behind a
+        team-coloured body. Drawing the ring as a sprite means the whole field
+        costs two batched SpriteList draw calls per frame, instead of one
+        immediate-mode draw_circle_outline() call per car per frame (twenty
+        separate GPU round trips that used to run on top of the batch).
+        """
+        self._car_outline_sprites = arcade.SpriteList()
         self._car_sprites = arcade.SpriteList()
         self._car_sprite_map = {}
-        
+
         for code in self.drivers:
             color = self.driver_colors.get(code, arcade.color.WHITE)
-            # Create a simple circular sprite for each car
-            sprite = arcade.SpriteCircle(CAR_RADIUS, color)
-            sprite.visible = False  # Start hidden, will be positioned in on_update
-            self._car_sprites.append(sprite)
-            self._car_sprite_map[code] = sprite
+            outline = arcade.SpriteCircle(CAR_RADIUS + CAR_OUTLINE_WIDTH, arcade.color.WHITE)
+            body = arcade.SpriteCircle(CAR_RADIUS, color)
+            # Start hidden; _update_car_sprites() reveals and positions them.
+            outline.visible = False
+            body.visible = False
+            self._car_outline_sprites.append(outline)
+            self._car_sprites.append(body)
+            self._car_sprite_map[code] = (outline, body)
+
+    def _get_text(self, key, text, x, y, color, font_size=12, bold=False,
+                  anchor_x="left", anchor_y="baseline"):
+        """Return a reusable arcade.Text object for one call site.
+
+        Constructing an arcade.Text lays the string out glyph by glyph and
+        uploads the result to the GPU. Rebuilding every label on every frame -
+        the leaderboard alone is about a hundred of them - was by far the most
+        expensive thing this window did, and it is what made the replay feel
+        choppy even when very little was moving.
+
+        Here each call site keeps one long-lived Text object and we only write
+        back the attributes that actually changed, which costs a few comparisons.
+
+        Args:
+            key: Unique, stable identifier for the call site (e.g. "hud.lap").
+            text: The string to display.
+            x, y: Screen position.
+            color: Text colour as an RGB or RGBA tuple.
+            font_size, bold, anchor_x, anchor_y: Applied once, when the object is
+                first created - these cannot change for a given key.
+
+        Returns:
+            The cached arcade.Text, ready to ``.draw()``.
+        """
+        label = self._text_cache.get(key)
+
+        if label is None:
+            label = arcade.Text(text, x, y, color, font_size, bold=bold,
+                                anchor_x=anchor_x, anchor_y=anchor_y)
+            self._text_cache[key] = label
+            self._text_colors[key] = color
+            return label
+
+        # Every assignment below invalidates arcade's cached layout even when the
+        # value is unchanged, so each one is guarded by a comparison.
+        if label.text != text:
+            label.text = text
+        if label.x != x:
+            label.x = x
+        if label.y != y:
+            label.y = y
+        if self._text_colors[key] != color:
+            label.color = color
+            self._text_colors[key] = color
+
+        return label
 
     def _build_track_shapes(self, track_color):
         """Build static track geometry as ShapeElementList for batch rendering.
@@ -271,70 +402,164 @@ class F1ReplayWindow(arcade.Window):
         
         self._last_track_status = track_color
 
-    def _get_current_frame_data(self, frame_idx: int) -> dict:
-        """Get current frame data, supporting both legacy and NumPy formats.
-        
-        Returns a frame dictionary compatible with legacy code.
-        """
-        if self.use_numpy_arrays:
-            # Fast NumPy array access
-            frame_data = {}
-            for driver_idx, code in enumerate(self.driver_codes):
-                frame_data[code] = {
-                    "x": float(self.driver_data_array[frame_idx, driver_idx, FIELD_X]),
-                    "y": float(self.driver_data_array[frame_idx, driver_idx, FIELD_Y]),
-                    "dist": float(self.driver_data_array[frame_idx, driver_idx, FIELD_DIST]),
-                    "rel_dist": float(self.driver_data_array[frame_idx, driver_idx, FIELD_REL_DIST]),
-                    "lap": int(round(self.driver_data_array[frame_idx, driver_idx, FIELD_LAP])),
-                    "tyre": int(self.driver_data_array[frame_idx, driver_idx, FIELD_TYRE]),
-                    "position": int(self.driver_data_array[frame_idx, driver_idx, FIELD_POSITION]),
-                    "speed": float(self.driver_data_array[frame_idx, driver_idx, FIELD_SPEED]),
-                    "gear": int(self.driver_data_array[frame_idx, driver_idx, FIELD_GEAR]),
-                    "drs": int(self.driver_data_array[frame_idx, driver_idx, FIELD_DRS]),
-                }
-            return {
-                "t": float(self.frame_metadata[frame_idx, 0]),
-                "lap": int(self.frame_metadata[frame_idx, 1]),
-                "drivers": frame_data,
-            }
-        else:
-            # Legacy frame format
-            return self.frames[frame_idx]
+    def _get_frame_state(self, frame_index: float) -> dict:
+        """Build the race state for a *fractional* frame index.
 
-    def _update_car_sprites(self, frame: dict, next_frame: dict = None, interpolation: float = 0.0):
-        """Update car sprite positions for batch rendering with interpolation.
-        
+        ``frame_index`` usually sits between two stored telemetry frames. Values
+        that describe a continuous quantity (track position, distance covered,
+        speed, the race clock) are linearly blended towards the next frame so the
+        cars glide; discrete values (lap number, tyre compound, gear, DRS, race
+        position) are taken from the current frame, because a blended "lap 12.4"
+        or a fractional tyre id is meaningless.
+
+        The result is memoised per index. Every panel in a rendered frame then
+        shares one computation *and* one set of positions, so the car, its label
+        and its battle marker can never disagree about where it is.
+
         Args:
-            frame: Current frame data
-            next_frame: Next frame data for interpolation (optional)
-            interpolation: Interpolation factor between frames (0.0 to 1.0)
+            frame_index: Fractional index into the telemetry frames.
+
+        Returns:
+            dict with ``t`` (race seconds), ``lap`` (leader lap) and ``drivers``
+            (driver code -> telemetry dict), matching the legacy frame layout.
         """
+        if self._frame_state_cache_key == frame_index:
+            return self._frame_state_cache
+
+        idx = max(0, min(int(frame_index), self.n_frames - 1))
+        next_idx = min(idx + 1, self.n_frames - 1)
+        # No next frame to blend into on the very last frame of the replay.
+        blend = (frame_index - idx) if next_idx != idx else 0.0
+
+        if self.use_numpy_arrays:
+            state = self._build_state_from_arrays(idx, next_idx, blend)
+        else:
+            state = self._build_state_from_frames(idx, next_idx, blend)
+
+        self._frame_state_cache_key = frame_index
+        self._frame_state_cache = state
+        return state
+
+    def _build_state_from_arrays(self, idx: int, next_idx: int, blend: float) -> dict:
+        """Interpolate the optimised NumPy telemetry arrays (fast path).
+
+        The blend is a single vectorised operation over the whole
+        ``(n_drivers, n_fields)`` slice rather than a Python loop over every
+        driver and every field, and ``.tolist()`` then converts the block to
+        Python floats in one C-level pass.
+        """
+        current = self.driver_data_array[idx]
+
+        if blend > 0.0:
+            values = current + (self.driver_data_array[next_idx] - current) * blend
+            # Undo the blend for the columns that must stay discrete.
+            values[:, self._discrete_field_idx] = current[:, self._discrete_field_idx]
+        else:
+            values = current
+
+        rows = values.tolist()
+
+        drivers = {}
+        for driver_idx, code in enumerate(self.driver_codes):
+            row = rows[driver_idx]
+            drivers[code] = {
+                "x": row[FIELD_X],
+                "y": row[FIELD_Y],
+                "dist": row[FIELD_DIST],
+                "rel_dist": row[FIELD_REL_DIST],
+                "lap": int(round(row[FIELD_LAP])),
+                "tyre": int(row[FIELD_TYRE]),
+                "position": int(row[FIELD_POSITION]),
+                "speed": row[FIELD_SPEED],
+                "gear": int(row[FIELD_GEAR]),
+                "drs": int(row[FIELD_DRS]),
+            }
+
+        # Blend the race clock too, otherwise the HUD timer ticks in visible steps.
+        race_time = float(self.frame_metadata[idx, 0])
+        if blend > 0.0:
+            race_time += (float(self.frame_metadata[next_idx, 0]) - race_time) * blend
+
+        return {
+            "t": race_time,
+            "lap": int(self.frame_metadata[idx, 1]),
+            "drivers": drivers,
+        }
+
+    def _build_state_from_frames(self, idx: int, next_idx: int, blend: float) -> dict:
+        """Interpolate the legacy list-of-dicts frame format.
+
+        Kept so callers that still pass ``frames=`` keep working; the NumPy path
+        above is used whenever the optimised arrays are supplied.
+        """
+        current = self.frames[idx]
+        if blend <= 0.0:
+            return current
+
+        next_frame = self.frames[next_idx]
+        drivers = {}
+
+        for code, pos in current["drivers"].items():
+            next_pos = next_frame["drivers"].get(code)
+            if next_pos is None:
+                # Driver missing from the next frame - nothing sensible to blend to.
+                drivers[code] = pos
+                continue
+
+            blended = dict(pos)
+            # Only the continuous values move; see _get_frame_state() for why.
+            for field in ("x", "y", "dist", "speed"):
+                start = pos.get(field, 0.0)
+                blended[field] = start + (next_pos.get(field, start) - start) * blend
+            drivers[code] = blended
+
+        return {
+            "t": current["t"] + (next_frame["t"] - current["t"]) * blend,
+            "lap": current.get("lap", 1),
+            "drivers": drivers,
+        }
+
+    def _update_car_sprites(self, frame: dict) -> dict:
+        """Move every car sprite to its screen position for this frame.
+
+        ``frame`` is already interpolated by _get_frame_state(), so this only has
+        to convert world coordinates to screen coordinates. The scale/offset are
+        copied into locals first because this runs once per driver per frame and
+        attribute lookups add up in a hot loop.
+
+        Args:
+            frame: Interpolated race state from _get_frame_state().
+
+        Returns:
+            Mapping of driver code -> (screen_x, screen_y) for the visible cars,
+            reused by the label and overlay passes so they stay exactly in sync.
+        """
+        screen_positions = {}
+        scale, tx, ty = self.world_scale, self.tx, self.ty
+
         for code, pos in frame["drivers"].items():
-            if code not in self._car_sprite_map:
+            sprites = self._car_sprite_map.get(code)
+            if sprites is None:
                 continue
-            
-            sprite = self._car_sprite_map[code]
-            
-            # Hide cars that are out (rel_dist == 1 indicates car retired/DNF)
+
+            outline, body = sprites
+
+            # rel_dist == 1 marks a retired car: hide it rather than parking it
+            # on the track for the rest of the replay.
             if pos.get("rel_dist", 0) == 1:
-                sprite.visible = False
+                outline.visible = False
+                body.visible = False
                 continue
-            
-            sprite.visible = True
-            
-            # Interpolate position if next frame is available
-            if next_frame and code in next_frame["drivers"] and interpolation > 0.0:
-                next_pos = next_frame["drivers"][code]
-                # Linear interpolation between current and next frame
-                x = pos["x"] + (next_pos["x"] - pos["x"]) * interpolation
-                y = pos["y"] + (next_pos["y"] - pos["y"]) * interpolation
-            else:
-                x = pos["x"]
-                y = pos["y"]
-            
-            sx, sy = self.world_to_screen(x, y)
-            sprite.center_x = sx
-            sprite.center_y = sy
+
+            sx = scale * pos["x"] + tx
+            sy = scale * pos["y"] + ty
+            outline.position = (sx, sy)
+            body.position = (sx, sy)
+            outline.visible = True
+            body.visible = True
+            screen_positions[code] = (sx, sy)
+
+        return screen_positions
 
     def _generate_predicted_insights(self, frame):
         """Generate insights for predicted mode based on current frame data."""
@@ -473,17 +698,11 @@ class F1ReplayWindow(arcade.Window):
                 rect=arcade.LBWH(0, 0, self.width, self.height)
             )
 
-        # 2. Get current frame data (supports both legacy and NumPy formats)
-        # Use fractional frame index for smoother interpolation
-        idx = int(self.frame_index)
-        idx = min(idx, self.n_frames - 1)
-        frame = self._get_current_frame_data(idx)
+        # 2. Build the interpolated race state once and share it with every panel
+        # below, so the cars, the leaderboard and the HUD all describe the exact
+        # same instant of the race.
+        frame = self._get_frame_state(self.frame_index)
         current_time = frame["t"]
-        
-        # Calculate interpolation factor for smooth animation
-        next_idx = min(idx + 1, self.n_frames - 1)
-        interpolation = self.frame_index - idx
-        next_frame = self._get_current_frame_data(next_idx) if interpolation > 0.0 and next_idx != idx else None
 
         # Get current track status
         current_track_status = "1"  # Default green
@@ -503,51 +722,23 @@ class F1ReplayWindow(arcade.Window):
         if self._track_shapes:
             self._track_shapes.draw()
 
-        # 4. Draw Cars - use batch SpriteList for better performance
-        # Update sprite positions with interpolation for smoother movement
-        self._update_car_sprites(frame, next_frame, interpolation)
-        
-        # Draw all car sprites in one batch call
+        # 4. Draw Cars - two batched SpriteList calls (white ring, then body)
+        # instead of per-car immediate-mode circles.
+        # The returned screen coordinates are shared with the label and overlay
+        # passes below, so nothing can drift out of sync with the sprites.
+        screen_positions = self._update_car_sprites(frame)
+        self._car_outline_sprites.draw()
         self._car_sprites.draw()
-        
-        # Draw car outlines and labels (these still need individual calls)
-        for code, pos in frame["drivers"].items():
-            # rel_dist == 1 indicates car retired/DNF
-            if pos.get("rel_dist", 0) == 1:
-                continue
-            
-            # Interpolate position for smooth labels
-            if next_frame and code in next_frame["drivers"] and interpolation > 0.0:
-                next_pos = next_frame["drivers"][code]
-                x = pos["x"] + (next_pos["x"] - pos["x"]) * interpolation
-                y = pos["y"] + (next_pos["y"] - pos["y"]) * interpolation
-            else:
-                x = pos["x"]
-                y = pos["y"]
-            
-            sx, sy = self.world_to_screen(x, y)
 
-            # Draw car outline
-            arcade.draw_circle_outline(sx, sy, CAR_RADIUS, arcade.color.WHITE, 2)
-
-            # Draw driver code label for selected driver or top 3
-            position = pos.get("position", 99)
-            if code == self.selected_driver or position <= 3:
-                # Background for label
-                arcade.draw_rect_filled(arcade.XYWH(sx, sy + 18, 28, 14), (0, 0, 0, 180))
-                arcade.Text(
-                    code,
-                    sx, sy + 18,
-                    arcade.color.WHITE,
-                    9,
-                    bold=True,
-                    anchor_x="center", anchor_y="center"
-                ).draw()
+        # 5. Draw name tags for the podium places and the selected driver. They
+        # reuse the screen coordinates computed above, so a tag can never lag a
+        # pixel behind the car it belongs to.
+        self._draw_car_labels(frame, screen_positions)
 
         # --- UI ELEMENTS ---
         self._draw_hud(frame, current_time, current_track_status)
         self._draw_leaderboard(frame)
-        self._draw_prediction_overlay(frame)
+        self._draw_prediction_overlay(screen_positions)
         self._draw_controls_legend()
         self._draw_selected_driver_info(frame)
         self._draw_ml_panel(frame)
@@ -557,6 +748,27 @@ class F1ReplayWindow(arcade.Window):
 
         # Draw chat panel (on top of everything when active)
         self._draw_chat_panel(frame)
+
+    def _draw_car_labels(self, frame, screen_positions):
+        """Draw the driver-code tags that follow the top three and the selection.
+
+        Args:
+            frame: Interpolated race state from _get_frame_state().
+            screen_positions: driver code -> (x, y) from _update_car_sprites().
+        """
+        for code, (sx, sy) in screen_positions.items():
+            position = frame["drivers"][code].get("position", 99)
+            if code != self.selected_driver and position > 3:
+                continue
+
+            label_y = sy + 18
+            # Small dark plate behind the text so it stays readable over the track.
+            arcade.draw_rect_filled(arcade.XYWH(sx, label_y, 28, 14), (0, 0, 0, 180))
+            self._get_text(
+                f"car.label.{code}", code, sx, label_y,
+                arcade.color.WHITE, 9, bold=True,
+                anchor_x="center", anchor_y="center",
+            ).draw()
 
     def _draw_hud(self, frame, current_time, track_status):
         """Draw heads-up display (lap, time, flags) with panel background."""
@@ -591,10 +803,10 @@ class F1ReplayWindow(arcade.Window):
             gp_name = self.race_info.get('gp', 'Unknown GP')
             year = self.race_info.get('year', 2025)
             banner_text = f"🔮 PREDICTED - {year} {gp_name}"
-            arcade.Text(banner_text,
-                        self.width / 2, self.height - 15,
-                        arcade.color.CYAN, 18, bold=True,
-                        anchor_x="center", anchor_y="top").draw()
+            self._get_text("hud.banner", banner_text,
+                           self.width / 2, self.height - 15,
+                           arcade.color.CYAN, 18, bold=True,
+                           anchor_x="center", anchor_y="top").draw()
 
         # HUD content
         text_x = panel_x + 15
@@ -602,31 +814,31 @@ class F1ReplayWindow(arcade.Window):
         line_offset = 0
 
         # Lap counter with larger font
-        arcade.Text(f"LAP {leader_lap}",
-                    text_x, text_y - line_offset,
-                    arcade.color.WHITE, 28, bold=True, anchor_y="top").draw()
+        self._get_text("hud.lap", f"LAP {leader_lap}",
+                       text_x, text_y - line_offset,
+                       arcade.color.WHITE, 28, bold=True, anchor_y="top").draw()
         line_offset += HUD_SECTION_GAP
 
         # Race time
-        arcade.Text(f"⏱ {time_str}",
-                    text_x, text_y - line_offset,
-                    arcade.color.LIGHT_GRAY, 18, anchor_y="top").draw()
+        self._get_text("hud.time", f"⏱ {time_str}",
+                       text_x, text_y - line_offset,
+                       arcade.color.LIGHT_GRAY, 18, anchor_y="top").draw()
         line_offset += HUD_LINE_HEIGHT
 
         # Playback speed
         speed_color = arcade.color.GREEN if self.playback_speed > 1 else (
             arcade.color.YELLOW if self.playback_speed < 1 else arcade.color.WHITE
         )
-        arcade.Text(f"▶ {self.playback_speed}x",
-                    text_x, text_y - line_offset,
-                    speed_color, 16, anchor_y="top").draw()
+        self._get_text("hud.speed", f"▶ {self.playback_speed}x",
+                       text_x, text_y - line_offset,
+                       speed_color, 16, anchor_y="top").draw()
         line_offset += HUD_LINE_HEIGHT
 
         # Pause indicator
         if self.paused:
-            arcade.Text("⏸ PAUSED",
-                        text_x, text_y - line_offset,
-                        arcade.color.YELLOW, 16, bold=True, anchor_y="top").draw()
+            self._get_text("hud.paused", "⏸ PAUSED",
+                           text_x, text_y - line_offset,
+                           arcade.color.YELLOW, 16, bold=True, anchor_y="top").draw()
         line_offset += HUD_LINE_HEIGHT
 
         # Track status flag with background
@@ -646,9 +858,9 @@ class F1ReplayWindow(arcade.Window):
                 200, 30
             )
             arcade.draw_rect_filled(flag_rect, bg_color)
-            arcade.Text(text,
-                        text_x + 5, flag_y,
-                        color, 18, bold=True, anchor_y="top").draw()
+            self._get_text("hud.flag", text,
+                           text_x + 5, flag_y,
+                           color, 18, bold=True, anchor_y="top").draw()
 
     def _draw_leaderboard(self, frame):
         """Draw the leaderboard on the right side with panel background."""
@@ -681,20 +893,21 @@ class F1ReplayWindow(arcade.Window):
         arcade.draw_rect_filled(header_rect, HEADER_BG_COLOR)
 
         # Header text
-        arcade.Text("🏁 LIVE STANDINGS",
-                    leaderboard_x + 10, leaderboard_y - 12,
-                    arcade.color.WHITE, 16, bold=True,
-                    anchor_x="left", anchor_y="top").draw()
+        self._get_text("lb.header", "🏁 LIVE STANDINGS",
+                       leaderboard_x + 10, leaderboard_y - 12,
+                       arcade.color.WHITE, 16, bold=True,
+                       anchor_x="left", anchor_y="top").draw()
 
-        # Race time (from frame metadata if available)
-        race_time = frame.get("time", 0)
+        # Race time. The key is "t" - reading "time" always returned the default
+        # of 0, so this clock was frozen at 00:00 for the whole replay.
+        race_time = frame.get("t", 0)
         time_mins = int(race_time // 60)
         time_secs = int(race_time % 60)
         time_text = f"⏱ {time_mins:02d}:{time_secs:02d}"
-        arcade.Text(time_text,
-                    leaderboard_x + LEADERBOARD_WIDTH - 10, leaderboard_y - 12,
-                    arcade.color.YELLOW, 14, bold=True,
-                    anchor_x="right", anchor_y="top").draw()
+        self._get_text("lb.time", time_text,
+                       leaderboard_x + LEADERBOARD_WIDTH - 10, leaderboard_y - 12,
+                       arcade.color.YELLOW, 14, bold=True,
+                       anchor_x="right", anchor_y="top").draw()
 
         # Prepare driver list
         driver_list = []
@@ -734,10 +947,12 @@ class F1ReplayWindow(arcade.Window):
             # Position number with background
             pos_color = (255, 215, 0) if current_pos <= 3 else (100, 100, 100)
             arcade.draw_circle_filled(left_x + 12, top_y - row_height / 2 + 2, 10, pos_color)
-            arcade.Text(str(current_pos),
-                        left_x + 12, top_y - row_height / 2 + 2,
-                        arcade.color.BLACK if current_pos <= 3 else arcade.color.WHITE,
-                        11, bold=True, anchor_x="center", anchor_y="center").draw()
+            # Cache keys are per row index, not per driver: a row keeps its place
+            # on screen while the driver occupying it changes.
+            self._get_text(f"lb.pos.{i}", str(current_pos),
+                           left_x + 12, top_y - row_height / 2 + 2,
+                           arcade.color.BLACK if current_pos <= 3 else arcade.color.WHITE,
+                           11, bold=True, anchor_x="center", anchor_y="center").draw()
 
             # Driver code with team color indicator
             arcade.draw_rect_filled(arcade.XYWH(left_x + 30, top_y - row_height / 2 + 2, 4, 16), color)
@@ -747,24 +962,25 @@ class F1ReplayWindow(arcade.Window):
             text_color = arcade.color.GRAY if is_out else arcade.color.WHITE
 
             driver_text = f"{code}"
-            arcade.Text(driver_text,
-                        left_x + 40, top_y - row_height / 2 + 2,
-                        text_color, 13, bold=True,
-                        anchor_x="left", anchor_y="center").draw()
+            self._get_text(f"lb.code.{i}", driver_text,
+                           left_x + 40, top_y - row_height / 2 + 2,
+                           text_color, 13, bold=True,
+                           anchor_x="left", anchor_y="center").draw()
 
             # Calculate interval (to car ahead) and gap (to leader)
             if is_out:
-                # Show OUT status
-                arcade.Text("OUT",
-                            right_x - 105, top_y - row_height / 2 + 2,
-                            arcade.color.RED, 10, bold=True,
-                            anchor_x="right", anchor_y="center").draw()
+                # Show OUT status. Separate cache keys per variant because the
+                # font size and weight differ and are fixed at construction time.
+                self._get_text(f"lb.out.{i}", "OUT",
+                               right_x - 105, top_y - row_height / 2 + 2,
+                               arcade.color.RED, 10, bold=True,
+                               anchor_x="right", anchor_y="center").draw()
             elif i == 0:
                 # Leader - show "Leader"
-                arcade.Text("Leader",
-                            right_x - 105, top_y - row_height / 2 + 2,
-                            arcade.color.GREEN, 9,
-                            anchor_x="right", anchor_y="center").draw()
+                self._get_text(f"lb.leader.{i}", "Leader",
+                               right_x - 105, top_y - row_height / 2 + 2,
+                               arcade.color.GREEN, 9,
+                               anchor_x="right", anchor_y="center").draw()
             else:
                 # Calculate interval to car ahead
                 car_ahead_dist = driver_list[i-1][2].get("dist", 0)
@@ -779,10 +995,10 @@ class F1ReplayWindow(arcade.Window):
                 else:
                     interval_text = f"+{interval_dist / 1000:.2f}km"
                 
-                arcade.Text(interval_text,
-                            right_x - 105, top_y - row_height / 2 + 2,
-                            arcade.color.LIGHT_YELLOW, 9,
-                            anchor_x="right", anchor_y="center").draw()
+                self._get_text(f"lb.interval.{i}", interval_text,
+                               right_x - 105, top_y - row_height / 2 + 2,
+                               arcade.color.LIGHT_YELLOW, 9,
+                               anchor_x="right", anchor_y="center").draw()
 
                 # Gap to leader
                 gap = leader_dist - current_dist
@@ -792,10 +1008,10 @@ class F1ReplayWindow(arcade.Window):
                 else:
                     gap_text = f"+{gap / 1000:.1f}km"
                 
-                arcade.Text(gap_text,
-                            right_x - 48, top_y - row_height / 2 + 2,
-                            arcade.color.LIGHT_GRAY, 9,
-                            anchor_x="right", anchor_y="center").draw()
+                self._get_text(f"lb.gap.{i}", gap_text,
+                               right_x - 48, top_y - row_height / 2 + 2,
+                               arcade.color.LIGHT_GRAY, 9,
+                               anchor_x="right", anchor_y="center").draw()
 
             # Tyre icon
             tyre_name = get_tyre_compound_str(pos.get("tyre", 1))
@@ -807,22 +1023,20 @@ class F1ReplayWindow(arcade.Window):
                 rect = arcade.XYWH(tyre_icon_x, tyre_icon_y, icon_size, icon_size)
                 arcade.draw_texture_rect(rect=rect, texture=tyre_texture, angle=0, alpha=255)
 
-    def _draw_prediction_overlay(self, frame):
-        """Draw prediction overlay elements on the leaderboard."""
+    def _draw_prediction_overlay(self, screen_positions):
+        """Draw the battle markers over the cars.
+
+        This is now pure drawing: refreshing the predictions themselves runs an
+        ML model, so it was moved to _update_ml_outputs() where it is throttled
+        by wall-clock time and can never stall a rendered frame.
+
+        Args:
+            screen_positions: driver code -> (x, y) from _update_car_sprites().
+        """
         if not self.prediction_overlay.show_overlay:
             return
 
-        # Update predictions from ML model if available
-        if self.ml_trained and int(self.frame_index) % 25 == 0:
-            live_predictions = self.ml_predictor.predict_all_drivers(frame)
-            if live_predictions:
-                # Merge with external predictions
-                merged = {**self.external_predictions, **live_predictions}
-                self.prediction_overlay.update_predictions(merged)
-
-        # Draw battle highlights on car positions
-        for code, pos in frame["drivers"].items():
-            sx, sy = self.world_to_screen(pos["x"], pos["y"])
+        for code, (sx, sy) in screen_positions.items():
             self.prediction_overlay.draw_battle_highlight(sx, sy, code)
 
     def _draw_controls_legend(self):
@@ -835,6 +1049,7 @@ class F1ReplayWindow(arcade.Window):
             "M      Toggle ML Panel",
             "T      Toggle Tables",
             "C      AI Chat 🤖",
+            "R      Restart",
         ]
 
         panel_width = 180
@@ -855,13 +1070,14 @@ class F1ReplayWindow(arcade.Window):
         for i, line in enumerate(legend_lines):
             text_color = arcade.color.WHITE if i == 0 else arcade.color.LIGHT_GRAY
             font_size = 12 if i == 0 else 10
-            arcade.Text(
+            self._get_text(
+                f"legend.{i}",
                 line,
                 panel_x + 10,
                 panel_y + panel_height - 15 - (i * 22),
                 text_color,
                 font_size,
-                bold=(i == 0)
+                bold=(i == 0),
             ).draw()
 
     def _draw_selected_driver_info(self, frame):
@@ -900,14 +1116,15 @@ class F1ReplayWindow(arcade.Window):
         # Team color bar
         arcade.draw_rect_filled(arcade.XYWH(info_x + 8, info_y - 5, 6, 25), (255, 255, 255))
 
-        arcade.Text(
+        self._get_text(
+            "driver.name",
             f"  {self.selected_driver}",
             info_x + 15,
             info_y - 5,
             arcade.color.WHITE,
             18,
             bold=True,
-            anchor_x="left", anchor_y="center"
+            anchor_x="left", anchor_y="center",
         ).draw()
 
         # Driver stats
@@ -938,22 +1155,25 @@ class F1ReplayWindow(arcade.Window):
 
         for i, (label, value, color) in enumerate(stats):
             y_pos = stat_y - (i * 28)
-            arcade.Text(label, info_x + 15, y_pos,
-                        arcade.color.LIGHT_GRAY, 12, anchor_y="center").draw()
-            arcade.Text(value, info_x + box_width - 15, y_pos,
-                        color, 13, bold=True, anchor_x="right", anchor_y="center").draw()
+            self._get_text(f"driver.stat.label.{i}", label, info_x + 15, y_pos,
+                           arcade.color.LIGHT_GRAY, 12, anchor_y="center").draw()
+            self._get_text(f"driver.stat.value.{i}", value, info_x + box_width - 15, y_pos,
+                           color, 13, bold=True,
+                           anchor_x="right", anchor_y="center").draw()
 
-        # ML Prediction
-        prediction = self.ml_predictor.predict(frame, self.selected_driver) if self.ml_trained else None
+        # ML Prediction - taken from the cache refreshed by _update_ml_outputs()
+        # rather than re-running the model on every single rendered frame.
+        prediction = self._selected_driver_prediction
         if prediction:
             trend = prediction['trend']
             trend_color = (arcade.color.GREEN if trend == 'improving' else
                            arcade.color.RED if trend == 'declining' else arcade.color.GRAY)
             pred_text = f"→ P{prediction['predicted_position']:.0f}"
-            arcade.Text("🤖 Prediction", info_x + 15, stat_y - 140,
-                        arcade.color.CYAN, 12, anchor_y="center").draw()
-            arcade.Text(pred_text, info_x + box_width - 15, stat_y - 140,
-                        trend_color, 13, bold=True, anchor_x="right", anchor_y="center").draw()
+            self._get_text("driver.pred.label", "🤖 Prediction", info_x + 15, stat_y - 140,
+                           arcade.color.CYAN, 12, anchor_y="center").draw()
+            self._get_text("driver.pred.value", pred_text, info_x + box_width - 15, stat_y - 140,
+                           trend_color, 13, bold=True,
+                           anchor_x="right", anchor_y="center").draw()
 
     def _get_tyre_color(self, tyre_name):
         """Get color for tyre compound."""
@@ -994,36 +1214,32 @@ class F1ReplayWindow(arcade.Window):
         )
         arcade.draw_rect_filled(header_rect, (0, 80, 100, 200))
 
-        arcade.Text(
+        self._get_text(
+            "ml.header",
             "🤖 ML RACE INSIGHTS",
             panel_x + 15,
             panel_y + ML_PANEL_HEIGHT - 18,
             arcade.color.CYAN,
             14,
             bold=True,
-            anchor_x="left", anchor_y="center"
+            anchor_x="left", anchor_y="center",
         ).draw()
 
         # Training status indicator
         status_color = arcade.color.GREEN if self.ml_trained else arcade.color.YELLOW
         status_text = "● ACTIVE" if self.ml_trained else "● TRAINING..."
-        arcade.Text(
+        self._get_text(
+            "ml.status",
             status_text,
             panel_x + ML_PANEL_WIDTH - 15,
             panel_y + ML_PANEL_HEIGHT - 18,
             status_color,
             11,
-            anchor_x="right", anchor_y="center"
+            anchor_x="right", anchor_y="center",
         ).draw()
 
-        # Update insights periodically
-        if int(self.frame_index) % 50 == 0 and self.ml_trained:
-            if self.mode == 'predicted':
-                # Use predicted mode insights generator
-                self.ml_insights = self._generate_predicted_insights(frame)
-            else:
-                # Use ML predictor for historical mode
-                self.ml_insights = self.ml_predictor.get_race_insights(frame)
+        # The insight text itself is regenerated in _update_ml_outputs(); this
+        # method only renders whatever is currently in self.ml_insights.
 
         # Draw insights with icons
         insight_y = panel_y + ML_PANEL_HEIGHT - 50
@@ -1033,13 +1249,14 @@ class F1ReplayWindow(arcade.Window):
                 display_text = insight
             else:
                 display_text = insight[:ML_INSIGHT_MAX_LENGTH - 3] + "..."
-            arcade.Text(
+            self._get_text(
+                f"ml.insight.{i}",
                 display_text,
                 panel_x + 15,
                 insight_y - (i * 32),
                 arcade.color.WHITE,
                 12,
-                anchor_x="left", anchor_y="center"
+                anchor_x="left", anchor_y="center",
             ).draw()
 
     def _draw_chat_panel(self, frame):
@@ -1070,14 +1287,15 @@ class F1ReplayWindow(arcade.Window):
         )
         arcade.draw_rect_filled(header_rect, (0, 80, 100, 220))
 
-        arcade.Text(
+        self._get_text(
+            "chat.header",
             "🤖 AI Race Analyst - Ask anything about F1!",
             self.width / 2,
             panel_y + CHAT_PANEL_HEIGHT - 25,
             arcade.color.CYAN,
             16,
             bold=True,
-            anchor_x="center", anchor_y="center"
+            anchor_x="center", anchor_y="center",
         ).draw()
 
         # Draw chat messages
@@ -1098,13 +1316,14 @@ class F1ReplayWindow(arcade.Window):
                 prefix = "AI: "
                 color = arcade.color.LIGHT_GREEN
 
-            arcade.Text(
+            self._get_text(
+                f"chat.msg.{i}",
                 prefix + content,
                 panel_x + 20,
                 msg_y - (i * 40),
                 color,
                 12,
-                anchor_x="left", anchor_y="center"
+                anchor_x="left", anchor_y="center",
             ).draw()
 
         # Draw input box
@@ -1131,23 +1350,25 @@ class F1ReplayWindow(arcade.Window):
             display_text = "Type your question and press Enter..."
             text_color = arcade.color.GRAY
 
-        arcade.Text(
+        self._get_text(
+            "chat.input",
             display_text,
             panel_x + 25,
             input_y,
             text_color,
             13,
-            anchor_x="left", anchor_y="center"
+            anchor_x="left", anchor_y="center",
         ).draw()
 
         # Draw close instruction
-        arcade.Text(
+        self._get_text(
+            "chat.hint",
             "Press C to close | ESC to cancel input",
             self.width / 2,
             panel_y + 10,
             arcade.color.LIGHT_GRAY,
             11,
-            anchor_x="center", anchor_y="center"
+            anchor_x="center", anchor_y="center",
         ).draw()
 
         # Show quick tips if no messages yet
@@ -1155,13 +1376,14 @@ class F1ReplayWindow(arcade.Window):
             tips = self.ai_chat.get_quick_tips()
             tip_y = panel_y + CHAT_PANEL_HEIGHT - 120
             for i, tip in enumerate(tips[:4]):
-                arcade.Text(
+                self._get_text(
+                    f"chat.tip.{i}",
                     tip,
                     panel_x + 30,
                     tip_y - (i * 30),
                     arcade.color.LIGHT_GRAY,
                     11,
-                    anchor_x="left", anchor_y="center"
+                    anchor_x="left", anchor_y="center",
                 ).draw()
 
     def _send_chat_message(self):
@@ -1175,9 +1397,9 @@ class F1ReplayWindow(arcade.Window):
         # Add user message to history
         self.chat_messages.append({"role": "user", "content": question})
 
-        # Get current frame for context
-        idx = min(int(self.frame_index), self.n_frames - 1)
-        frame = self.frames[idx]
+        # Get current frame for context. This must go through _get_frame_state()
+        # because self.frames is None whenever the optimised NumPy arrays are used.
+        frame = self._get_frame_state(self.frame_index)
 
         # Update AI context with current standings
         standings = {}
@@ -1189,29 +1411,145 @@ class F1ReplayWindow(arcade.Window):
         response = self.ai_chat.ask(question)
         self.chat_messages.append({"role": "assistant", "content": response})
 
+    def _update_ml_outputs(self):
+        """Refresh the machine-learning outputs on a wall-clock schedule.
+
+        These calls run scikit-learn models and rebuild formatted strings. They
+        used to sit inside on_draw() and fire on a frame counter, which meant an
+        occasional rendered frame took several times as long as its neighbours -
+        the classic cause of a visible hitch. Driving them from here, throttled
+        by seconds rather than by frames, keeps on_draw() a predictable cost and
+        makes the refresh rate independent of the playback speed.
+        """
+        if not self.ml_trained:
+            return
+
+        # Built lazily: if none of the throttles are due we never pay for it.
+        frame = None
+
+        # Live position predictions feeding the battle markers. Skipped in
+        # predicted mode, where the predictor was never trained on frame data.
+        if (self.mode != 'predicted'
+                and self.prediction_overlay.show_overlay
+                and self._elapsed_time >= self._next_prediction_time):
+            self._next_prediction_time = self._elapsed_time + ML_PREDICTION_INTERVAL
+            frame = self._get_frame_state(self.frame_index)
+            try:
+                live_predictions = self.ml_predictor.predict_all_drivers(frame)
+            except Exception:
+                live_predictions = None
+            if live_predictions:
+                # External (pre-race) predictions stay as the base layer.
+                self.prediction_overlay.update_predictions(
+                    {**self.external_predictions, **live_predictions}
+                )
+
+        # Insight text shown in the ML panel.
+        if self.show_ml_panel and self._elapsed_time >= self._next_insight_time:
+            self._next_insight_time = self._elapsed_time + ML_INSIGHT_INTERVAL
+            if frame is None:
+                frame = self._get_frame_state(self.frame_index)
+            try:
+                if self.mode == 'predicted':
+                    self.ml_insights = self._generate_predicted_insights(frame)
+                else:
+                    self.ml_insights = self.ml_predictor.get_race_insights(frame)
+            except Exception:
+                # A failed refresh just leaves the previous insights on screen.
+                pass
+
+        # Trend arrow for the driver info panel, on the same schedule.
+        if self.mode != 'predicted' and self.selected_driver:
+            if frame is None:
+                frame = self._get_frame_state(self.frame_index)
+            if self.selected_driver in frame["drivers"]:
+                try:
+                    self._selected_driver_prediction = self.ml_predictor.predict(
+                        frame, self.selected_driver
+                    )
+                except Exception:
+                    self._selected_driver_prediction = None
+
     def on_update(self, delta_time: float):
-        """Update game state with smooth frame interpolation."""
+        """Advance the replay clock.
+
+        Arcade calls this TARGET_FPS times a second. The whole job is turning
+        elapsed real seconds into a smooth advance of ``frame_index``.
+
+        Args:
+            delta_time: Real seconds since the previous update, as reported by
+                arcade. It is neither capped nor evenly spaced, so both are fixed
+                here before the value is used.
+        """
+        # Cap outliers first. After a stall arcade reports the entire gap as one
+        # delta; advancing by it would teleport the cars across the track.
+        delta_time = min(delta_time, MAX_FRAME_DELTA)
+
+        # Then low-pass filter what is left, so millisecond-scale wobble in the
+        # frame times does not show up as shimmer in the car positions. The
+        # average converges on the true frame time, so playback speed is
+        # unaffected - only the jitter is removed.
+        self._smoothed_delta += (delta_time - self._smoothed_delta) * DELTA_SMOOTHING
+
+        # The ML throttles run even while paused so the panels stay live and the
+        # work stays out of on_draw().
+        self._elapsed_time += delta_time
+        self._update_ml_outputs()
+
         if self.paused:
             return
-        # Smooth frame advancement using delta_time for consistent speed
-        # INTERPOLATION_FACTOR already built into frame generation, so multiply by it
-        frame_increment = delta_time * FPS * INTERPOLATION_FACTOR * self.playback_speed
-        self.frame_index += frame_increment
-        
-        # Clamp to valid range
-        if self.frame_index >= self.n_frames:
+
+        # One stored frame is 1 / (FPS * INTERPOLATION_FACTOR) seconds of race
+        # time, so this converts smoothed real seconds into stored frames.
+        self.frame_index += (
+            self._smoothed_delta * FPS * INTERPOLATION_FACTOR * self.playback_speed
+        )
+
+        # Clamp to valid range. Stopping on the last frame is better than
+        # spinning against the clamp: SPACE then restarts the replay.
+        if self.frame_index >= self.n_frames - 1:
             self.frame_index = float(self.n_frames - 1)
-        elif self.frame_index < 0:
+            self.paused = True
+        elif self.frame_index < 0.0:
             self.frame_index = 0.0
 
     def on_key_press(self, symbol: int, modifiers: int):
         """Handle keyboard input."""
+        # While the chat box has focus every printable key belongs to the message
+        # being typed, so only the editing keys are handled here. Without this
+        # guard, typing "restart" would pause the replay (SPACE), jump it back to
+        # the start (R) and toggle two panels (T, M) along the way.
+        if self.chat_input_active and self.show_chat_panel:
+            if symbol == arcade.key.ESCAPE:
+                self.show_chat_panel = False
+                self.chat_input_active = False
+                self.chat_input = ""
+            elif symbol in (arcade.key.ENTER, arcade.key.RETURN):
+                if self.chat_input.strip():
+                    self._send_chat_message()
+            elif symbol == arcade.key.BACKSPACE:
+                self.chat_input = self.chat_input[:-1]
+            return
+
+        # Seek distance in stored frames. Derived from seconds so it stays the
+        # same on-screen jump no matter how INTERPOLATION_FACTOR is tuned - the
+        # old fixed 10-frame step barely moved at high interpolation factors.
+        seek_frames = SEEK_SECONDS * FPS * INTERPOLATION_FACTOR
+
         if symbol == arcade.key.SPACE:
+            # Resuming after the replay ran to the end restarts it from the top.
+            if self.paused and self.frame_index >= self.n_frames - 1:
+                self.frame_index = 0.0
             self.paused = not self.paused
         elif symbol == arcade.key.RIGHT:
-            self.frame_index = min(self.frame_index + 10.0, self.n_frames - 1)
+            self.frame_index = min(self.frame_index + seek_frames, self.n_frames - 1)
         elif symbol == arcade.key.LEFT:
-            self.frame_index = max(self.frame_index - 10.0, 0.0)
+            self.frame_index = max(self.frame_index - seek_frames, 0.0)
+        elif symbol == arcade.key.R:
+            # Restart from the opening frame at normal speed.
+            self.frame_index = 0.0
+            self.playback_speed = 1.0
+            self.paused = False
         elif symbol == arcade.key.UP:
             self.playback_speed = min(self.playback_speed * 2.0, 8.0)
         elif symbol == arcade.key.DOWN:
@@ -1240,16 +1578,10 @@ class F1ReplayWindow(arcade.Window):
             # Note: 'c' character input is handled by on_text
         elif symbol == arcade.key.ESCAPE:
             if self.show_chat_panel:
-                # Close chat panel
+                # Close the chat panel when it is open but not focused.
                 self.show_chat_panel = False
                 self.chat_input_active = False
                 self.chat_input = ""
-        elif symbol == arcade.key.ENTER or symbol == arcade.key.RETURN:
-            if self.chat_input_active and self.chat_input.strip():
-                self._send_chat_message()
-        elif symbol == arcade.key.BACKSPACE:
-            if self.chat_input_active and self.chat_input:
-                self.chat_input = self.chat_input[:-1]
 
     def on_text(self, text: str):
         """Handle text input for chat."""
@@ -1287,6 +1619,10 @@ class F1ReplayWindow(arcade.Window):
             self.selected_driver = None
         else:
             self.selected_driver = new_selection
+
+        # The cached trend belongs to the previous driver; clear it and let
+        # _update_ml_outputs() refill it on its next tick.
+        self._selected_driver_prediction = None
 
 
 def run_arcade_replay(frames=None, track_statuses=None, example_lap=None, drivers=None, title="F1 Race Replay",
