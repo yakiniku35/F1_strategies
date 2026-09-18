@@ -222,3 +222,10 @@ __marimo__/
 
 # macOS
 .DS_Store
+
+# Generated race output (charts, exported results and strategies)
+charts/
+results_*.json
+results_*.csv
+strategy_*.json
+strategy_*.csv

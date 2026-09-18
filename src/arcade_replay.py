@@ -44,6 +44,29 @@ HUD_PANEL_HEIGHT = 180
 ML_PANEL_WIDTH = 440
 ML_PANEL_HEIGHT = 200
 
+# Timeline scrubber constants
+TIMELINE_HEIGHT = 16          # the draggable bar itself
+TIMELINE_LABEL_HEIGHT = 18    # the lap / time text drawn above it
+TIMELINE_GRAB_PADDING = 10    # extra pixels around the bar that still register a grab
+TIMELINE_HANDLE_WIDTH = 4
+# Total vertical space the timeline reserves at the bottom of the window. The
+# legend and ML panels are pushed up by this much so nothing overlaps.
+TIMELINE_TOTAL_HEIGHT = TIMELINE_HEIGHT + TIMELINE_LABEL_HEIGHT + 8
+
+# Bottom edge that the other bottom-anchored panels sit above.
+BOTTOM_UI_BASE = LEADERBOARD_PADDING + TIMELINE_TOTAL_HEIGHT
+
+TIMELINE_BG_COLOR = (45, 45, 58)
+TIMELINE_BORDER_COLOR = (80, 80, 100)
+TIMELINE_PROGRESS_COLOR = (0, 160, 200)
+TIMELINE_HANDLE_COLOR = (255, 255, 255)
+
+# Results panel constants
+RESULTS_PANEL_WIDTH = 560
+RESULTS_ROW_HEIGHT = 24
+RESULTS_MAX_ROWS = 12  # how many finishers the end-of-race panel lists
+RESULTS_NAME_MAX_CHARS = 20  # keeps the name column clear of the gap column
+
 # Chat UI Constants
 CHAT_PANEL_WIDTH = 500
 CHAT_PANEL_HEIGHT = 400
@@ -164,7 +187,9 @@ class F1ReplayWindow(arcade.Window):
                  mode: str = 'historical', race_info: Optional[dict] = None,
                  driver_data_array: Optional[np.ndarray] = None,
                  frame_metadata: Optional[np.ndarray] = None,
-                 driver_codes: Optional[List[str]] = None):
+                 driver_codes: Optional[List[str]] = None,
+                 race_results: Optional[dict] = None,
+                 driver_names: Optional[dict] = None):
         # vsync stops the screen tearing; pinning update_rate *and* draw_rate keeps
         # the simulation step and the render step on the same even cadence.
         super().__init__(
@@ -201,6 +226,21 @@ class F1ReplayWindow(arcade.Window):
         # Cached ML prediction for the selected driver, refreshed on a timer.
         self._selected_driver_prediction = None
 
+        # --- End-of-race results ---------------------------------------------
+        # Precomputed by the caller (see src.race_results); None simply means no
+        # panel is shown when the replay finishes.
+        self.race_results = race_results or {}
+        self.driver_names = driver_names or {}
+        self._race_finished = False
+        self.show_results_panel = False
+
+        # --- Timeline scrubber ------------------------------------------------
+        # True while the user is dragging the playhead.
+        self._scrubbing = False
+        # Flag periods as (start_fraction, end_fraction, colour), precomputed
+        # once because they never change and the bar is redrawn every frame.
+        self._timeline_flags = []
+
         # Mode: 'historical' or 'predicted'
         self.mode = mode
         self.race_info = race_info or {}
@@ -230,6 +270,10 @@ class F1ReplayWindow(arcade.Window):
             self.frame_metadata = None
             self.driver_codes = None
             self._driver_idx_map = None
+
+        # Total race duration, used to place flag periods on the timeline.
+        self._race_duration = self._compute_race_duration()
+        self._build_timeline_flags()
 
         # Load tyre textures
         self._load_tyre_textures()
@@ -328,6 +372,149 @@ class F1ReplayWindow(arcade.Window):
             self._car_outline_sprites.append(outline)
             self._car_sprites.append(body)
             self._car_sprite_map[code] = (outline, body)
+
+    def _compute_race_duration(self) -> float:
+        """Total race time in seconds, used to map flag periods onto the timeline."""
+        if self.n_frames <= 0:
+            return 0.0
+        try:
+            if self.use_numpy_arrays:
+                return float(self.frame_metadata[self.n_frames - 1, 0])
+            return float(self.frames[self.n_frames - 1].get("t", 0.0))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return 0.0
+
+    def _build_timeline_flags(self):
+        """Precompute the coloured flag periods drawn on the timeline.
+
+        Stored as fractions of the race rather than pixels, so a window resize
+        costs nothing and the bar is never rebuilt while drawing.
+        """
+        self._timeline_flags = []
+
+        if self._race_duration <= 0:
+            return
+
+        for status in self.track_statuses or []:
+            code = str(status.get("status", "1"))
+            # Green means "nothing happening" - only the interruptions are worth
+            # marking, otherwise the bar is a wall of colour.
+            if code in ("1", "GREEN"):
+                continue
+
+            start = float(status.get("start_time", 0.0) or 0.0)
+            end = status.get("end_time")
+            end = self._race_duration if end is None else float(end)
+
+            start_fraction = max(0.0, min(start / self._race_duration, 1.0))
+            end_fraction = max(0.0, min(end / self._race_duration, 1.0))
+            if end_fraction <= start_fraction:
+                continue
+
+            self._timeline_flags.append((
+                start_fraction, end_fraction,
+                STATUS_COLORS.get(code, (150, 150, 150)),
+            ))
+
+    def _timeline_bounds(self):
+        """Screen rectangle of the scrubber as (left, bottom, width, height)."""
+        left = LEADERBOARD_PADDING
+        width = max(1.0, self.width - LEADERBOARD_PADDING * 2)
+        bottom = LEADERBOARD_PADDING
+        return left, bottom, width, TIMELINE_HEIGHT
+
+    def _timeline_contains(self, x: float, y: float) -> bool:
+        """Whether a click at (x, y) should grab the scrubber.
+
+        The hit area is padded beyond the drawn bar, because a 16 pixel target
+        is uncomfortably small to hit with a mouse.
+        """
+        left, bottom, width, height = self._timeline_bounds()
+        return (left - TIMELINE_GRAB_PADDING <= x <= left + width + TIMELINE_GRAB_PADDING
+                and bottom - TIMELINE_GRAB_PADDING <= y <= bottom + height + TIMELINE_GRAB_PADDING)
+
+    def _seek_to_screen_x(self, x: float):
+        """Jump the replay to whatever point of the race the x coordinate names."""
+        left, _, width, _ = self._timeline_bounds()
+        fraction = max(0.0, min((x - left) / width, 1.0))
+        self.frame_index = fraction * max(0, self.n_frames - 1)
+
+        # Scrubbing away from the flag takes the race out of its finished state,
+        # so the results panel does not hang over a race that is running again.
+        if self.frame_index < self.n_frames - 1:
+            self._race_finished = False
+            self.show_results_panel = False
+
+    def _draw_timeline(self):
+        """Draw the scrubber: flag periods, progress, and the playhead."""
+        if self.n_frames <= 1:
+            return
+
+        left, bottom, width, height = self._timeline_bounds()
+        centre_y = bottom + height / 2
+
+        # Track
+        arcade.draw_rect_filled(
+            arcade.XYWH(left + width / 2, centre_y, width, height),
+            TIMELINE_BG_COLOR)
+
+        # Flag periods, underneath the progress fill so both stay readable.
+        for start_fraction, end_fraction, color in self._timeline_flags:
+            segment_width = max(2.0, (end_fraction - start_fraction) * width)
+            segment_x = left + start_fraction * width + segment_width / 2
+            arcade.draw_rect_filled(
+                arcade.XYWH(segment_x, centre_y, segment_width, height),
+                (*color, 210))
+
+        progress = self.frame_index / (self.n_frames - 1)
+        progress = max(0.0, min(progress, 1.0))
+        playhead_x = left + progress * width
+
+        # Played portion, drawn as a translucent wash so flag colours show through.
+        if progress > 0:
+            played_width = max(1.0, progress * width)
+            arcade.draw_rect_filled(
+                arcade.XYWH(left + played_width / 2, centre_y, played_width, height),
+                (*TIMELINE_PROGRESS_COLOR, 90))
+
+        arcade.draw_rect_outline(
+            arcade.XYWH(left + width / 2, centre_y, width, height),
+            TIMELINE_BORDER_COLOR, 1)
+
+        # Playhead
+        arcade.draw_rect_filled(
+            arcade.XYWH(playhead_x, centre_y, TIMELINE_HANDLE_WIDTH, height + 8),
+            TIMELINE_HANDLE_COLOR)
+
+        # Labels above the bar.
+        label_y = bottom + height + TIMELINE_LABEL_HEIGHT / 2 + 2
+        current_lap, total_laps = self._timeline_lap_info()
+
+        self._get_text("timeline.lap", f"LAP {current_lap} / {total_laps}",
+                       left + 2, label_y, arcade.color.LIGHT_GRAY, 11, bold=True,
+                       anchor_x="left", anchor_y="center").draw()
+
+        remaining = max(0.0, self._race_duration * (1.0 - progress))
+        self._get_text("timeline.remaining",
+                       f"-{int(remaining // 60):02d}:{int(remaining % 60):02d}"
+                       f"   ({progress * 100:.0f}%)",
+                       left + width - 2, label_y, arcade.color.GRAY, 11,
+                       anchor_x="right", anchor_y="center").draw()
+
+    def _timeline_lap_info(self):
+        """Current leader lap and the race's total lap count, for the timeline label."""
+        try:
+            if self.use_numpy_arrays:
+                index = max(0, min(int(self.frame_index), self.n_frames - 1))
+                current = int(self.frame_metadata[index, 1])
+                total = int(self.frame_metadata[self.n_frames - 1, 1])
+            else:
+                index = max(0, min(int(self.frame_index), self.n_frames - 1))
+                current = int(self.frames[index].get("lap", 1))
+                total = int(self.frames[self.n_frames - 1].get("lap", 1))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return 1, 1
+        return current, max(total, current, 1)
 
     def _get_text(self, key, text, x, y, color, font_size=12, bold=False,
                   anchor_x="left", anchor_y="baseline"):
@@ -742,12 +929,128 @@ class F1ReplayWindow(arcade.Window):
         self._draw_controls_legend()
         self._draw_selected_driver_info(frame)
         self._draw_ml_panel(frame)
+        self._draw_timeline()
 
         # Draw tables view (on top of everything when active)
         self.prediction_overlay.draw_tables_view(self.width, self.height, frame)
 
+        # Draw the end-of-race classification (above everything but the chat)
+        self._draw_results_panel()
+
         # Draw chat panel (on top of everything when active)
         self._draw_chat_panel(frame)
+
+    def _draw_results_panel(self):
+        """Draw the final classification once the replay reaches the end.
+
+        The rows come from src.race_results.classification_from_frames() and are
+        handed to the window by the caller, so this method only renders - it
+        never recomputes anything while drawing.
+        """
+        if not self.show_results_panel:
+            return
+
+        classification = self.race_results.get("classification") or []
+        if not classification:
+            return
+
+        rows = classification[:RESULTS_MAX_ROWS]
+        fastest = self.race_results.get("fastest_lap")
+
+        header_height = 44
+        footer_height = 52 if fastest else 34
+        panel_height = header_height + len(rows) * RESULTS_ROW_HEIGHT + footer_height
+        panel_x = (self.width - RESULTS_PANEL_WIDTH) / 2
+        panel_y = (self.height - panel_height) / 2
+
+        # Panel background
+        bg_rect = arcade.XYWH(self.width / 2, self.height / 2,
+                              RESULTS_PANEL_WIDTH, panel_height)
+        arcade.draw_rect_filled(bg_rect, (15, 15, 25, 242))
+        arcade.draw_rect_outline(bg_rect, (255, 215, 0), 3)
+
+        # Header band
+        header_rect = arcade.XYWH(self.width / 2,
+                                  panel_y + panel_height - header_height / 2,
+                                  RESULTS_PANEL_WIDTH, header_height)
+        arcade.draw_rect_filled(header_rect, (60, 50, 0, 230))
+
+        self._get_text("results.title", "🏁 FINAL CLASSIFICATION",
+                       self.width / 2, panel_y + panel_height - header_height / 2,
+                       (255, 215, 0), 18, bold=True,
+                       anchor_x="center", anchor_y="center").draw()
+
+        # Column positions, measured from the panel's left edge. The driver
+        # name gets its own column rather than being glued to the code, so a
+        # long name cannot run into the gap column beside it.
+        col_pos = panel_x + 34       # right-anchored
+        col_code = panel_x + 48      # left-anchored
+        col_name = panel_x + 95      # left-anchored, truncated
+        col_gap = panel_x + 310      # left-anchored
+        col_points = panel_x + RESULTS_PANEL_WIDTH - 24  # right-anchored
+
+        row_y = panel_y + panel_height - header_height - RESULTS_ROW_HEIGHT / 2
+
+        for i, entry in enumerate(rows):
+            y = row_y - i * RESULTS_ROW_HEIGHT
+            retired = entry["status"] == "DNF"
+
+            if retired:
+                row_color = (150, 90, 90)
+            elif entry["position"] == 1:
+                row_color = (255, 215, 0)
+            elif entry["position"] <= 3:
+                row_color = (210, 210, 210)
+            else:
+                row_color = arcade.color.WHITE
+
+            self._get_text(f"results.pos.{i}",
+                           "-" if retired else str(entry["position"]),
+                           col_pos, y, row_color, 13, bold=True,
+                           anchor_x="right", anchor_y="center").draw()
+
+            self._get_text(f"results.code.{i}", entry["code"],
+                           col_code, y, row_color, 13, bold=True,
+                           anchor_x="left", anchor_y="center").draw()
+
+            # Truncated so it always clears the gap column that follows it.
+            name = self.driver_names.get(entry["code"], "")
+            self._get_text(f"results.name.{i}", name[:RESULTS_NAME_MAX_CHARS],
+                           col_name, y, arcade.color.LIGHT_GRAY, 12,
+                           anchor_x="left", anchor_y="center").draw()
+
+            status = f"DNF ({entry['cause']})" if entry["cause"] else entry["gap_text"]
+            self._get_text(f"results.gap.{i}", status,
+                           col_gap, y,
+                           (200, 120, 120) if retired else arcade.color.LIGHT_GRAY,
+                           12, anchor_x="left", anchor_y="center").draw()
+
+            points = entry["points"]
+            label = f"{points} pts" if points else ""
+            if entry["fastest_lap"]:
+                # "FL" rather than a clock glyph: this marker carries data, so
+                # it must stay legible on systems with no emoji font.
+                label = f"FL {label}".strip()
+            self._get_text(f"results.pts.{i}", label,
+                           col_points, y, (140, 220, 255), 12, bold=True,
+                           anchor_x="right", anchor_y="center").draw()
+
+        footer_y = panel_y + (30 if fastest else 16)
+
+        if fastest:
+            fl_name = self.driver_names.get(fastest["code"], fastest["code"])
+            self._get_text("results.fastest",
+                           f"Fastest lap: {fl_name} "
+                           f"- lap {fastest['lap']} ({fastest['time']:.3f}s)",
+                           self.width / 2, footer_y, (170, 120, 255), 12,
+                           anchor_x="center", anchor_y="center").draw()
+
+        # Kept in English like the rest of the window: arcade's default font has
+        # no CJK glyphs, so Chinese here would render as empty boxes.
+        self._get_text("results.hint",
+                       "ESC to close  ·  SPACE to replay",
+                       self.width / 2, panel_y + 14, arcade.color.GRAY, 11,
+                       anchor_x="center", anchor_y="center").draw()
 
     def _draw_car_labels(self, frame, screen_positions):
         """Draw the driver-code tags that follow the top three and the selection.
@@ -1050,12 +1353,14 @@ class F1ReplayWindow(arcade.Window):
             "T      Toggle Tables",
             "C      AI Chat 🤖",
             "R      Restart",
+            "Drag the bar below to seek",
         ]
 
         panel_width = 180
         panel_height = len(legend_lines) * 22 + 15
         panel_x = LEADERBOARD_PADDING
-        panel_y = LEADERBOARD_PADDING
+        # Sits above the timeline scrubber, which owns the bottom strip.
+        panel_y = BOTTOM_UI_BASE
 
         # Draw panel background
         bg_rect = arcade.XYWH(
@@ -1191,9 +1496,9 @@ class F1ReplayWindow(arcade.Window):
         if not self.show_ml_panel:
             return
 
-        # Position at bottom right, above controls
+        # Position at bottom right, above the timeline scrubber
         panel_x = self.width - ML_PANEL_WIDTH - LEADERBOARD_PADDING
-        panel_y = LEADERBOARD_PADDING
+        panel_y = BOTTOM_UI_BASE
 
         # Panel background
         bg_rect = arcade.XYWH(
@@ -1510,6 +1815,11 @@ class F1ReplayWindow(arcade.Window):
         if self.frame_index >= self.n_frames - 1:
             self.frame_index = float(self.n_frames - 1)
             self.paused = True
+            if not self._race_finished:
+                # Chequered flag: raise the classification once, so dismissing
+                # it does not make it pop straight back up.
+                self._race_finished = True
+                self.show_results_panel = bool(self.race_results.get("classification"))
         elif self.frame_index < 0.0:
             self.frame_index = 0.0
 
@@ -1540,6 +1850,8 @@ class F1ReplayWindow(arcade.Window):
             # Resuming after the replay ran to the end restarts it from the top.
             if self.paused and self.frame_index >= self.n_frames - 1:
                 self.frame_index = 0.0
+                self._race_finished = False
+                self.show_results_panel = False
             self.paused = not self.paused
         elif symbol == arcade.key.RIGHT:
             self.frame_index = min(self.frame_index + seek_frames, self.n_frames - 1)
@@ -1550,6 +1862,8 @@ class F1ReplayWindow(arcade.Window):
             self.frame_index = 0.0
             self.playback_speed = 1.0
             self.paused = False
+            self._race_finished = False
+            self.show_results_panel = False
         elif symbol == arcade.key.UP:
             self.playback_speed = min(self.playback_speed * 2.0, 8.0)
         elif symbol == arcade.key.DOWN:
@@ -1582,6 +1896,8 @@ class F1ReplayWindow(arcade.Window):
                 self.show_chat_panel = False
                 self.chat_input_active = False
                 self.chat_input = ""
+            elif self.show_results_panel:
+                self.show_results_panel = False
 
     def on_text(self, text: str):
         """Handle text input for chat."""
@@ -1594,7 +1910,14 @@ class F1ReplayWindow(arcade.Window):
                     self.chat_input += text
 
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
-        """Handle mouse click for driver selection."""
+        """Handle mouse clicks: timeline scrubbing, chat focus, driver selection."""
+        # The timeline owns the bottom strip of the window and is checked first,
+        # so a click there never falls through to driver selection.
+        if not self.show_chat_panel and self._timeline_contains(x, y):
+            self._scrubbing = True
+            self._seek_to_screen_x(x)
+            return
+
         # If chat panel is open, check if clicking in input area
         if self.show_chat_panel:
             panel_x = (self.width - CHAT_PANEL_WIDTH) / 2
@@ -1624,11 +1947,28 @@ class F1ReplayWindow(arcade.Window):
         # _update_ml_outputs() refill it on its next tick.
         self._selected_driver_prediction = None
 
+    def on_mouse_drag(self, x: float, y: float, dx: float, dy: float,
+                      buttons: int, modifiers: int):
+        """Continue a timeline scrub while the button stays down.
+
+        The y coordinate is deliberately ignored once the grab has started, so
+        the drag keeps working when the pointer strays off the bar.
+        """
+        if self._scrubbing:
+            self._seek_to_screen_x(x)
+
+    def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
+        """Finish a timeline scrub."""
+        if self._scrubbing:
+            self._seek_to_screen_x(x)
+            self._scrubbing = False
+
 
 def run_arcade_replay(frames=None, track_statuses=None, example_lap=None, drivers=None, title="F1 Race Replay",
                       playback_speed=1.0, driver_colors=None, predictions=None,
                       mode='historical', race_info=None,
-                      driver_data_array=None, frame_metadata=None, driver_codes=None):
+                      driver_data_array=None, frame_metadata=None, driver_codes=None,
+                      race_results=None, driver_names=None):
     """Run the F1 replay visualization.
 
     Supports both legacy frame format and optimized NumPy arrays for better performance.
@@ -1647,6 +1987,11 @@ def run_arcade_replay(frames=None, track_statuses=None, example_lap=None, driver
         driver_data_array: NumPy 3D array (n_frames, n_drivers, n_fields) - optimized format
         frame_metadata: NumPy 2D array (n_frames, 2) with [time, leader_lap] - optimized format
         driver_codes: List of driver codes (used with NumPy arrays)
+        race_results: Optional precomputed result from
+            src.race_results.classification_from_frames(), shown as a panel when
+            the replay reaches the chequered flag
+        driver_names: Optional mapping of driver code to full name, used by the
+            results panel
     """
     F1ReplayWindow(
         frames=frames,
@@ -1661,6 +2006,8 @@ def run_arcade_replay(frames=None, track_statuses=None, example_lap=None, driver
         race_info=race_info,
         driver_data_array=driver_data_array,
         frame_metadata=frame_metadata,
-        driver_codes=driver_codes
+        driver_codes=driver_codes,
+        race_results=race_results,
+        driver_names=driver_names,
     )
     arcade.run()

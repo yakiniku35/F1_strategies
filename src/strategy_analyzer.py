@@ -254,11 +254,15 @@ class StrategyAnalyzer:
         # 3. We're in optimal pit window
         
         gap_score = max(0, self.MAX_UNDERCUT_GAP - gap_to_car_ahead) / self.MAX_UNDERCUT_GAP  # 0-1 score
-        tyre_advantage = max(0, their_tyre_age - our_tyre_age) / 10.0  # 0-1 score
-        
+        # Clamped to 1.0: ten laps fresher is already a maximal tyre advantage,
+        # and without the clamp a large age difference pushes the weighted total
+        # past 1.0 - which is wrong, because the score is reported as "x / 1.00".
+        tyre_advantage = min(1.0, max(0, their_tyre_age - our_tyre_age) / 10.0)  # 0-1 score
+
         # Check if in optimal window for our compound
         in_window = 0.3 <= (current_lap / self.total_laps) <= 0.6
-        
+
+        # Weights sum to 1.0, so the score stays inside 0-1.
         undercut_score = (gap_score * 0.5 + tyre_advantage * 0.3 + (0.2 if in_window else 0))
         
         viable = undercut_score > 0.5 and gap_to_car_ahead < self.MAX_UNDERCUT_GAP
