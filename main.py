@@ -13,9 +13,11 @@ Usage:
     python main.py --schedule               # View race calendar
 """
 
+import os
 import sys
 import argparse
 import logging
+from datetime import datetime
 from tabulate import tabulate
 
 # Configure logging to suppress verbose FastF1 output
@@ -36,6 +38,9 @@ from src.simulation import PredictedRaceSimulator, FutureRaceDataProvider
 from src.ml_predictor import PreRacePredictor
 from src.replay_wrapper import replay_race_external  # External f1-race-replay integration
 from src.strategy_analyzer import StrategyAnalyzer
+from src.race_results import (
+    classification_from_frames, format_classification, export_classification,
+)
 
 
 def print_banner():
@@ -85,13 +90,24 @@ def get_gp_input():
     return gp
 
 
-def view_schedule():
-    """Display the 2025 F1 schedule."""
-    data_provider = FutureRaceDataProvider()
-    schedule = data_provider.get_2025_schedule()
+def view_schedule(year=None):
+    """Display the F1 schedule for a season.
 
-    print("\n📅 2025 F1 賽程表 (2025 F1 Schedule)")
+    Args:
+        year: Season to show. Defaults to the current calendar year.
+    """
+    data_provider = FutureRaceDataProvider(year)
+    schedule = data_provider.get_schedule()
+
+    print(f"\n📅 {data_provider.year} F1 賽程表 ({data_provider.year} F1 Schedule)")
     print("=" * 60)
+
+    # Say plainly when the calendar came from the bundled tables rather than
+    # FastF1, so nobody mistakes fallback data for the real season.
+    if data_provider.schedule_source == "fallback":
+        print(f"⚠️  無法取得 {data_provider.year} 賽程，顯示內建的 "
+              f"{FutureRaceDataProvider.FALLBACK_YEAR} 賽程作為替代")
+        print("   (請檢查網路連線，或該年度賽程尚未公布)")
 
     table_data = []
     for race in schedule:
@@ -190,9 +206,27 @@ def predict_future_race(year, gp, speed=1.0, train_model=True):
         sim_data = simulator.generate_simulated_frames()
 
         print(f"✅ 生成了 {len(sim_data['frames'])} 個模擬幀")
+
+        retirements = sim_data.get('retirements') or {}
+        if retirements:
+            print(f"⚠️  本場模擬有 {len(retirements)} 台車退賽")
+
+        # Work out the final classification before opening the window, so the
+        # replay can show it at the chequered flag. It is deliberately not
+        # printed yet - that would spoil the race you are about to watch.
+        race_results = classification_from_frames(
+            sim_data['frames'],
+            retirements=retirements,
+            total_laps=sim_data.get('total_laps'),
+        )
+        driver_names = {
+            driver['code']: driver['name']
+            for driver in simulator.data_provider.get_drivers_list()
+        }
+
         print("\n🎬 開啟賽道模擬視窗...")
 
-        # Run the visualization
+        # Run the visualization (blocks until the window is closed)
         run_arcade_replay(
             frames=sim_data['frames'],
             track_statuses=sim_data['track_statuses'],
@@ -202,8 +236,91 @@ def predict_future_race(year, gp, speed=1.0, train_model=True):
             driver_colors=sim_data['driver_colors'],
             title=f"🔮 PREDICTED - {year} {gp} GP",
             mode='predicted',
-            race_info={'year': year, 'gp': gp}
+            race_info={'year': year, 'gp': gp},
+            race_results=race_results,
+            driver_names=driver_names,
         )
+
+        # Now that the window is closed, report the result in the terminal.
+        show_race_results(race_results, driver_names, year, gp,
+                          frames=sim_data['frames'],
+                          driver_colors=sim_data['driver_colors'])
+
+
+def show_race_results(race_results, driver_names, year, gp,
+                      frames=None, driver_colors=None):
+    """Print the final classification, then offer to export it and chart it.
+
+    Args:
+        race_results: Output of classification_from_frames().
+        driver_names: Mapping of driver code to full name.
+        year: Race year, used for the heading and the default filename.
+        gp: Grand Prix name, used for the heading and the default filename.
+        frames: Optional race frames, needed to draw the charts.
+        driver_colors: Optional team colours for the position chart.
+    """
+    classification = race_results.get('classification') or []
+    if not classification:
+        print("\n⚠️ 沒有可顯示的成績")
+        return
+
+    print(format_classification(
+        classification,
+        title=f"{year} {gp} GP - 最終成績 (FINAL CLASSIFICATION)",
+        driver_names=driver_names,
+        fastest_lap=race_results.get('fastest_lap'),
+    ))
+
+    safe_gp = str(gp).replace(' ', '_')
+
+    choice = input("\n匯出成績? Export results? (y=JSON/c=CSV/n=No): ").strip().lower()
+    if choice in ('y', 'c'):
+        extension = 'json' if choice == 'y' else 'csv'
+        filename = f"results_{year}_{safe_gp}.{extension}"
+        if export_classification(classification, filename,
+                                 fastest_lap=race_results.get('fastest_lap')):
+            print(f"✅ 已匯出: {filename}")
+
+    if frames:
+        chart_choice = input("產生比賽圖表? Generate charts? (y/n): ").strip().lower()
+        if chart_choice in ('y', 'yes', '是'):
+            generate_charts(frames, driver_colors, year, gp, safe_gp)
+
+
+def generate_charts(frames, driver_colors, year, gp, safe_gp):
+    """Draw the position-change and tyre-strategy charts for a race.
+
+    Args:
+        frames: Race frames.
+        driver_colors: Team colours keyed by driver code.
+        year: Race year, used in the chart titles and output directory.
+        gp: Grand Prix name, used in the chart titles.
+        safe_gp: Filesystem-safe form of the GP name.
+    """
+    print("\n⏳ 正在產生圖表...")
+
+    try:
+        # Imported here rather than at module scope: matplotlib is only needed
+        # when charts are actually requested, and it is slow to import.
+        from src.dashboard.charts import generate_race_charts
+    except ImportError:
+        print("⚠️ 需要 matplotlib 才能產生圖表: pip install matplotlib")
+        return
+
+    output_dir = os.path.join("charts", f"{year}_{safe_gp}")
+    charts = generate_race_charts(
+        frames,
+        driver_colors=driver_colors,
+        output_dir=output_dir,
+        title_prefix=f"{year} {gp} GP",
+    )
+
+    labels = {'positions': '名次變化圖', 'tyres': '輪胎策略圖'}
+    for key, path in charts.items():
+        if path:
+            print(f"✅ {labels.get(key, key)}: {path}")
+        else:
+            print(f"⚠️ 無法產生{labels.get(key, key)}")
 
 
 def replay_historical_race(year, gp, speed=1.0, use_optimized=True):
@@ -476,7 +593,7 @@ def interactive_mode():
 
     elif choice == '3':
         # View schedule
-        view_schedule()
+        view_schedule(get_year_input())
         input("\n按 Enter 返回主選單...")
         interactive_mode()
 
@@ -496,7 +613,7 @@ def main():
 
     # Handle command line mode
     if args.schedule:
-        view_schedule()
+        view_schedule(args.year)
         return
 
     if args.strategy:
@@ -514,7 +631,8 @@ def main():
         return
 
     if args.predict:
-        year = args.year or 2025
+        # Default to the current season rather than a year frozen in the source.
+        year = args.year or datetime.now().year
         gp = args.gp or args.round
         if gp is None:
             print("錯誤: 請指定 --gp 或 --round")

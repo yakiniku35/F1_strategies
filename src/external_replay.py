@@ -1,3 +1,11 @@
+"""Historical race replay window (the f1-race-replay derived viewer).
+
+The telemetry behind this window is stored at FPS (25) frames per second while
+the window renders at 60, so every drawn frame interpolates between two stored
+ones - otherwise the cars step forward 25 times a second and the motion reads as
+stutter no matter how fast the machine is.
+"""
+
 import os
 import arcade
 import numpy as np
@@ -7,6 +15,45 @@ from src.external_f1_data import FPS
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1200
 SCREEN_TITLE = "F1 Replay"
+
+# --- Animation / frame pacing -------------------------------------------------
+# Arcade schedules on_update() and on_draw() at this rate. Pinning both keeps the
+# simulation step and the render step on the same cadence.
+TARGET_FPS = 60
+
+# After a stall (garbage collection, a window drag) arcade reports the whole gap
+# as a single delta_time. Advancing playback by it teleports the cars, so cap it.
+MAX_FRAME_DELTA = 1.0 / 15.0  # seconds
+
+# Frame times wobble by a millisecond or two even on a healthy display, which
+# shows up as shimmer in the car positions. Advance by an exponential moving
+# average instead: it converges on the real frame time, so playback speed is
+# unchanged and only the jitter is removed.
+DELTA_SMOOTHING = 0.12  # 0.0 = never adapt, 1.0 = no smoothing at all
+
+# How much race time the left/right arrow keys skip.
+SEEK_SECONDS = 3.0
+
+# Car markers: a team-coloured body inside a white ring.
+CAR_RADIUS = 6
+CAR_OUTLINE_WIDTH = 2
+
+# Track status code -> outline colour. Defined at module level so it is built
+# once at import instead of being rebuilt inside every on_draw() call.
+TRACK_STATUS_COLORS = {
+    "1": (150, 150, 150),  # green flag / normal
+    "2": (220, 180, 0),    # yellow flag
+    "4": (180, 100, 30),   # safety car
+    "5": (200, 30, 30),    # red flag
+    "6": (200, 130, 50),   # virtual safety car
+    "7": (200, 130, 50),   # VSC ending
+}
+DEFAULT_TRACK_COLOR = (150, 150, 150)
+
+# Telemetry keys that may be blended between two stored frames. Everything else
+# (lap, tyre, gear, DRS, classified position, the retirement marker) is a
+# discrete state where blending would produce meaningless values.
+INTERPOLATED_KEYS = ("x", "y", "dist", "speed")
 
 def build_track_from_example_lap(example_lap, track_width=200):
     plot_x_ref = example_lap["X"].to_numpy()
@@ -43,8 +90,15 @@ class F1ReplayWindow(arcade.Window):
     def __init__(self, frames, track_statuses, example_lap, drivers, title,
                  playback_speed=1.0, driver_colors=None, circuit_rotation=0.0,
                  left_ui_margin=340, right_ui_margin=260, total_laps=None):
-        # Set resizable to True so the user can adjust mid-sim
-        super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
+        # Resizable so the user can adjust mid-sim. vsync removes tearing and
+        # pinning both rates keeps update and draw on one even cadence.
+        super().__init__(
+            SCREEN_WIDTH, SCREEN_HEIGHT, title,
+            resizable=True,
+            vsync=True,
+            update_rate=1 / TARGET_FPS,
+            draw_rate=1 / TARGET_FPS,
+        )
 
         self.frames = frames
         self.track_statuses = track_statuses
@@ -67,6 +121,30 @@ class F1ReplayWindow(arcade.Window):
         self.left_ui_margin = left_ui_margin
         self.right_ui_margin = right_ui_margin
 
+        # --- Animation state -------------------------------------------------
+        # Low-pass filtered frame delta used to advance frame_index (see on_update).
+        self._smoothed_delta = 1.0 / TARGET_FPS
+        # Memoised interpolated frame, so all the panels in one rendered frame
+        # share a single computation and therefore one set of positions.
+        self._frame_state_cache_key = None
+        self._frame_state_cache = None
+
+        # --- Render caches ---------------------------------------------------
+        # Long-lived arcade.Text objects keyed by call site (see _get_text()).
+        self._text_cache = {}
+        self._text_colors = {}
+        # Track outline batched into a ShapeElementList, rebuilt only when the
+        # flag colour or the window size changes.
+        self._track_shapes = None
+        self._last_track_color = None
+        # Car markers as two batched SpriteLists (rings, then bodies).
+        self._car_sprites = None
+        self._car_outline_sprites = None
+        self._car_sprite_map = {}
+        # Along-track progress per driver, recomputed once per stored frame.
+        self._progress_cache_idx = None
+        self._progress_cache = {}
+
         # Import the tyre textures from the images/tyres folder (all files)
         tyres_folder = os.path.join("images", "tyres")
         if os.path.exists(tyres_folder):
@@ -82,6 +160,12 @@ class F1ReplayWindow(arcade.Window):
          self.x_outer, self.y_outer,
          self.x_min, self.x_max,
          self.y_min, self.y_max) = build_track_from_example_lap(example_lap)
+
+        # Rotation centre of the circuit. Cached here because world_to_screen()
+        # used to recompute it on every single call - including once per point
+        # for the 4000 polyline points rebuilt on every resize.
+        self._world_cx = (self.x_min + self.x_max) / 2
+        self._world_cy = (self.y_min + self.y_max) / 2
 
         # Build a dense reference polyline (used for projecting car (x,y) -> along-track distance)
         ref_points = self._interpolate_points(self.plot_x_ref, self.plot_y_ref, interp_points=4000)
@@ -121,40 +205,263 @@ class F1ReplayWindow(arcade.Window):
         self.selected_driver = None
         self.leaderboard_rects = []  # list of tuples: (code, left, bottom, right, top)
 
+        # Car sprites need a live GL context, so build them last.
+        self._init_car_sprites()
+
+    def _init_car_sprites(self):
+        """Create the sprites used to draw the cars.
+
+        Each car is a white ring sprite with a team-coloured body sprite on top,
+        so the whole field costs two batched SpriteList draw calls per frame
+        instead of one immediate-mode draw_circle_filled() call per car.
+        """
+        self._car_outline_sprites = arcade.SpriteList()
+        self._car_sprites = arcade.SpriteList()
+        self._car_sprite_map = {}
+
+        for code in self.drivers:
+            color = self.driver_colors.get(code, arcade.color.WHITE)
+            outline = arcade.SpriteCircle(CAR_RADIUS + CAR_OUTLINE_WIDTH, arcade.color.WHITE)
+            body = arcade.SpriteCircle(CAR_RADIUS, color)
+            # Hidden until _update_car_sprites() places them.
+            outline.visible = False
+            body.visible = False
+            self._car_outline_sprites.append(outline)
+            self._car_sprites.append(body)
+            self._car_sprite_map[code] = (outline, body)
+
+    def _get_text(self, key, text, x, y, color, font_size=12, bold=False,
+                  anchor_x="left", anchor_y="baseline"):
+        """Return a reusable arcade.Text object for one call site.
+
+        Constructing an arcade.Text lays the string out glyph by glyph and
+        uploads it to the GPU. Rebuilding every label on every frame was the
+        single most expensive thing this window did. Each call site now keeps one
+        long-lived object and only the attributes that changed are written back.
+
+        Args:
+            key: Unique, stable identifier for the call site (e.g. "hud.lap").
+            text: The string to display.
+            x, y: Screen position.
+            color: Text colour as an RGB or RGBA tuple.
+            font_size, bold, anchor_x, anchor_y: Applied once, at construction -
+                these cannot change for a given key.
+
+        Returns:
+            The cached arcade.Text, ready to ``.draw()``.
+        """
+        label = self._text_cache.get(key)
+
+        if label is None:
+            label = arcade.Text(text, x, y, color, font_size, bold=bold,
+                                anchor_x=anchor_x, anchor_y=anchor_y)
+            self._text_cache[key] = label
+            self._text_colors[key] = color
+            return label
+
+        # Each assignment invalidates arcade's cached layout even when the value
+        # is unchanged, so guard every one of them.
+        if label.text != text:
+            label.text = text
+        if label.x != x:
+            label.x = x
+        if label.y != y:
+            label.y = y
+        if self._text_colors[key] != color:
+            label.color = color
+            self._text_colors[key] = color
+
+        return label
+
+    def _get_frame_state(self, frame_index):
+        """Build the race state for a *fractional* frame index.
+
+        Telemetry is stored at FPS (25) frames per second but the window renders
+        at 60, so most rendered frames fall between two stored ones. Continuous
+        values (track position, distance, speed, the race clock) are blended
+        towards the next stored frame so the cars glide; discrete values (lap,
+        tyre, gear, DRS, classified position, the retirement marker) are taken
+        from the current frame unchanged, because a blended "lap 12.4" is
+        meaningless.
+
+        The result is memoised per index so the HUD, leaderboard and car pass
+        share one computation and one set of positions.
+
+        Args:
+            frame_index: Fractional index into self.frames.
+
+        Returns:
+            A frame dict in the same shape as the stored frames.
+        """
+        if self._frame_state_cache_key == frame_index:
+            return self._frame_state_cache
+
+        idx = max(0, min(int(frame_index), self.n_frames - 1))
+        next_idx = min(idx + 1, self.n_frames - 1)
+        current = self.frames[idx]
+        # Nothing to blend into on the very last frame of the replay.
+        blend = (frame_index - idx) if next_idx != idx else 0.0
+
+        if blend <= 0.0:
+            state = current
+        else:
+            next_frame = self.frames[next_idx]
+            drivers = {}
+
+            for code, pos in current["drivers"].items():
+                next_pos = next_frame["drivers"].get(code)
+                if next_pos is None:
+                    # Driver absent from the next frame - nothing to blend to.
+                    drivers[code] = pos
+                    continue
+
+                blended = dict(pos)
+                for key in INTERPOLATED_KEYS:
+                    start = pos.get(key, 0.0)
+                    blended[key] = start + (next_pos.get(key, start) - start) * blend
+                drivers[code] = blended
+
+            state = {
+                "t": current["t"] + (next_frame["t"] - current["t"]) * blend,
+                "lap": current.get("lap", 1),
+                "drivers": drivers,
+            }
+            # Weather is a discrete snapshot; carry the current one across.
+            if "weather" in current:
+                state["weather"] = current["weather"]
+
+        self._frame_state_cache_key = frame_index
+        self._frame_state_cache = state
+        return state
+
+    def _build_track_shapes(self, track_color):
+        """Batch the track outline into a single ShapeElementList.
+
+        The outline is two 2000-point line strips. Drawing them with
+        arcade.draw_line_strip() re-tessellated and re-uploaded 4000 points on
+        every frame; a ShapeElementList uploads once and redraws from the GPU
+        buffer. It only has to be rebuilt when the flag colour changes or the
+        window is resized.
+
+        Args:
+            track_color: RGB colour for the current track status.
+        """
+        self._track_shapes = arcade.shape_list.ShapeElementList()
+
+        if len(self.screen_inner_points) > 1:
+            self._track_shapes.append(arcade.shape_list.create_line_strip(
+                self.screen_inner_points, track_color, 4))
+        if len(self.screen_outer_points) > 1:
+            self._track_shapes.append(arcade.shape_list.create_line_strip(
+                self.screen_outer_points, track_color, 4))
+
+        self._last_track_color = track_color
+
+    def _update_car_sprites(self, frame):
+        """Move every car sprite to its screen position for this frame.
+
+        Args:
+            frame: Interpolated race state from _get_frame_state().
+
+        Returns:
+            Mapping of driver code -> (screen_x, screen_y) for the visible cars.
+        """
+        screen_positions = {}
+
+        for code, pos in frame["drivers"].items():
+            sprites = self._car_sprite_map.get(code)
+            if sprites is None:
+                continue
+
+            outline, body = sprites
+            sx, sy = self.world_to_screen(pos.get("x", 0.0), pos.get("y", 0.0))
+            outline.position = (sx, sy)
+            body.position = (sx, sy)
+            outline.visible = True
+            body.visible = True
+            screen_positions[code] = (sx, sy)
+
+        return screen_positions
+
+    def _project_to_reference(self, x, y):
+        """Project a world position onto the dense reference polyline.
+
+        Returns the distance in metres travelled along the racing line to reach
+        the point on it nearest to (x, y).
+        """
+        if self._ref_total_length == 0.0 or len(self._ref_xs) == 0:
+            return 0.0
+
+        # Nearest dense sample. Kept as a per-driver scan on purpose: batching
+        # all drivers into one (n_drivers, 4000) distance matrix was measurably
+        # *slower*, because the temporaries no longer fit in cache.
+        dx = self._ref_xs - x
+        dy = self._ref_ys - y
+        idx = int(np.argmin(dx * dx + dy * dy))
+
+        # Refine onto the adjacent segment so the answer does not quantise to
+        # the polyline's sampling interval.
+        if idx < len(self._ref_xs) - 1:
+            x1, y1 = self._ref_xs[idx], self._ref_ys[idx]
+            vx = self._ref_xs[idx + 1] - x1
+            vy = self._ref_ys[idx + 1] - y1
+            seg_len2 = vx * vx + vy * vy
+            if seg_len2 > 0:
+                t = ((x - x1) * vx + (y - y1) * vy) / seg_len2
+                t_clamped = max(0.0, min(1.0, t))
+                # Distance along the segment is just the clamped parameter
+                # multiplied by the segment length.
+                return float(self._ref_cumdist[idx] + t_clamped * np.sqrt(seg_len2))
+
+        # Fallback: the cumulative distance at the closest dense sample.
+        return float(self._ref_cumdist[idx])
+
+    def _driver_progress(self, frame_idx, frame):
+        """Along-track progress in metres for every driver.
+
+        Ordering the leaderboard by the raw "dist" telemetry field disagrees with
+        where the cars are actually drawn, so each car's (x, y) is projected onto
+        a dense reference polyline of the racing line instead.
+
+        That projection is the most expensive non-drawing work in this window:
+        one scan of a 4000-point polyline per driver. It used to run on every
+        *rendered* frame - sixty times a second. Telemetry only changes FPS (25)
+        times a second, so the whole result is now cached against the stored
+        frame index and the frames rendered in between reuse it.
+
+        Args:
+            frame_idx: Index of the stored frame, used as the cache key.
+            frame: The stored frame whose driver coordinates are projected.
+
+        Returns:
+            Mapping of driver code -> metres of race distance covered.
+        """
+        if self._progress_cache_idx == frame_idx:
+            return self._progress_cache
+
+        progress = {}
+
+        for code, pos in frame["drivers"].items():
+            # Parse the lap defensively - telemetry occasionally carries None.
+            try:
+                lap = int(pos.get("lap", 1))
+            except (TypeError, ValueError):
+                lap = 1
+
+            projected_m = self._project_to_reference(pos.get("x", 0.0), pos.get("y", 0.0))
+            # Distance since the start = completed laps + progress around this lap.
+            progress[code] = float((max(lap, 1) - 1) * self._ref_total_length + projected_m)
+
+        self._progress_cache_idx = frame_idx
+        self._progress_cache = progress
+        return progress
+
     def _interpolate_points(self, xs, ys, interp_points=2000):
         t_old = np.linspace(0, 1, len(xs))
         t_new = np.linspace(0, 1, interp_points)
         xs_i = np.interp(t_new, t_old, xs)
         ys_i = np.interp(t_new, t_old, ys)
         return list(zip(xs_i, ys_i))
-
-    def _project_to_reference(self, x, y):
-        if self._ref_total_length == 0.0:
-            return 0.0
-
-        # Vectorized nearest-point to dense polyline points (sufficient for our purposes)
-        dx = self._ref_xs - x
-        dy = self._ref_ys - y
-        d2 = dx * dx + dy * dy
-        idx = int(np.argmin(d2))
-
-        # For a slightly better estimate, optionally project onto the adjacent segment
-        if idx < len(self._ref_xs) - 1:
-            x1, y1 = self._ref_xs[idx], self._ref_ys[idx]
-            x2, y2 = self._ref_xs[idx+1], self._ref_ys[idx+1]
-            vx, vy = x2 - x1, y2 - y1
-            seg_len2 = vx*vx + vy*vy
-            if seg_len2 > 0:
-                t = ((x - x1) * vx + (y - y1) * vy) / seg_len2
-                t_clamped = max(0.0, min(1.0, t))
-                proj_x = x1 + t_clamped * vx
-                proj_y = y1 + t_clamped * vy
-                # distance along segment from x1,y1
-                seg_dist = np.sqrt((proj_x - x1)**2 + (proj_y - y1)**2)
-                return float(self._ref_cumdist[idx] + seg_dist)
-
-        # Fallback: return the cumulative distance at the closest dense sample
-        return float(self._ref_cumdist[idx])
 
     def update_scaling(self, screen_w, screen_h):
         """
@@ -163,8 +470,8 @@ class F1ReplayWindow(arcade.Window):
         """
         padding = 0.05
         # If a rotation is applied, we must compute the rotated bounds
-        world_cx = (self.x_min + self.x_max) / 2
-        world_cy = (self.y_min + self.y_max) / 2
+        world_cx = self._world_cx
+        world_cy = self._world_cy
 
         def _rotate_about_center(x, y):
             # Translate to centre, rotate, translate back
@@ -215,22 +522,27 @@ class F1ReplayWindow(arcade.Window):
         self.screen_inner_points = [self.world_to_screen(x, y) for x, y in self.world_inner_points]
         self.screen_outer_points = [self.world_to_screen(x, y) for x, y in self.world_outer_points]
 
+        # The batched track geometry holds screen coordinates, so it is now stale.
+        self._track_shapes = None
+        self._last_track_color = None
+
     def on_resize(self, width, height):
         """Called automatically by Arcade when window is resized."""
         super().on_resize(width, height)
         self.update_scaling(width, height)
 
     def world_to_screen(self, x, y):
-        # Rotate around the track centre (if rotation is set), then scale+translate
-        world_cx = (self.x_min + self.x_max) / 2
-        world_cy = (self.y_min + self.y_max) / 2
+        """Convert world coordinates to screen coordinates.
 
+        Rotates around the cached track centre (when a circuit rotation is set),
+        then applies the fit scale and offset computed by update_scaling().
+        """
         if self._rot_rad:
-            tx = x - world_cx
-            ty = y - world_cy
+            tx = x - self._world_cx
+            ty = y - self._world_cy
             rx = tx * self._cos_rot - ty * self._sin_rot
             ry = tx * self._sin_rot + ty * self._cos_rot
-            x, y = rx + world_cx, ry + world_cy
+            x, y = rx + self._world_cx, ry + self._world_cy
 
         sx = self.world_scale * x + self.tx
         sy = self.world_scale * y + self.ty
@@ -252,72 +564,43 @@ class F1ReplayWindow(arcade.Window):
 
         # 1. Draw Background (stretched to fit new window size)
         if self.bg_texture:
-            arcade.draw_lrbt_rectangle_textured(
-                left=0, right=self.width,
-                bottom=0, top=self.height,
-                texture=self.bg_texture
+            arcade.draw_texture_rect(
+                texture=self.bg_texture,
+                rect=arcade.LBWH(0, 0, self.width, self.height),
             )
 
-        # 2. Draw Track (using pre-calculated screen points)
+        # 2. Build the interpolated race state once and share it with every panel
+        # below, so the cars, the HUD and the leaderboard describe one instant.
         idx = min(int(self.frame_index), self.n_frames - 1)
-        frame = self.frames[idx]
+        frame = self._get_frame_state(self.frame_index)
         current_time = frame["t"]
-        current_track_status = "GREEN"
+
+        current_track_status = "1"  # default: green flag
         for status in self.track_statuses:
             if status['start_time'] <= current_time and (status['end_time'] is None or current_time < status['end_time']):
                 current_track_status = status['status']
                 break
 
-        # Map track status -> colour (R,G,B)
-        STATUS_COLORS = {
-            "GREEN": (150, 150, 150),    # normal grey
-            "YELLOW": (220, 180,   0),   # caution
-            "RED": (200,  30,  30),      # red-flag
-            "VSC": (200, 130,  50),      # virtual safety car / amber-brown
-            "SC": (180, 100,  30),       # safety car (darker brown)
-        }
-        track_color = STATUS_COLORS.get("GREEN", (150, 150, 150))
+        track_color = TRACK_STATUS_COLORS.get(current_track_status, DEFAULT_TRACK_COLOR)
 
-        if current_track_status == "2":
-            track_color = STATUS_COLORS.get("YELLOW")
-        elif current_track_status == "4":
-            track_color = STATUS_COLORS.get("SC")
-        elif current_track_status == "5":
-            track_color = STATUS_COLORS.get("RED")
-        elif current_track_status == "6" or current_track_status == "7":
-            track_color = STATUS_COLORS.get("VSC")
- 
-        if len(self.screen_inner_points) > 1:
-            arcade.draw_line_strip(self.screen_inner_points, track_color, 4)
-        if len(self.screen_outer_points) > 1:
-            arcade.draw_line_strip(self.screen_outer_points, track_color, 4)
+        # 3. Draw Track from the batched shape list, rebuilding it only when the
+        # flag colour changes (a resize clears the cache in update_scaling()).
+        if self._track_shapes is None or self._last_track_color != track_color:
+            self._build_track_shapes(track_color)
+        if self._track_shapes:
+            self._track_shapes.draw()
 
-        # 3. Draw Cars
-        frame = self.frames[idx]
-        for code, pos in frame["drivers"].items():
-            sx, sy = self.world_to_screen(pos["x"], pos["y"])
-            color = self.driver_colors.get(code, arcade.color.WHITE)
-            arcade.draw_circle_filled(sx, sy, 6, color)
-        
+        # 4. Draw Cars - two batched SpriteList calls (rings, then bodies).
+        self._update_car_sprites(frame)
+        self._car_outline_sprites.draw()
+        self._car_sprites.draw()
+
         # --- UI ELEMENTS (Dynamic Positioning) ---
-        
-        # Determine Leader info using projected along-track distance (more robust than dist)
-        # Use the progress metric in metres for each driver and use that to order the leaderboard.
-        driver_progress = {}
-        for code, pos in frame["drivers"].items():
-            # parse lap defensively
-            lap_raw = pos.get("lap", 1)
-            try:
-                lap = int(lap_raw)
-            except Exception:
-                lap = 1
 
-            # Project (x,y) to reference and combine with lap count
-            projected_m = self._project_to_reference(pos.get("x", 0.0), pos.get("y", 0.0))
-            # progress in metres since race start: (lap-1) * lap_length + projected_m
-            progress_m = float((max(lap, 1) - 1) * self._ref_total_length + projected_m)
-
-            driver_progress[code] = progress_m
+        # Order the leaderboard by projected along-track distance rather than the
+        # raw "dist" field, so it agrees with what is drawn on track. Computed
+        # once per stored frame and cached (see _driver_progress).
+        driver_progress = self._driver_progress(idx, self.frames[idx])
 
         # Leader is the one with greatest progress_m
         if driver_progress:
@@ -339,35 +622,31 @@ class F1ReplayWindow(arcade.Window):
         if self.total_laps is not None:
             lap_str += f"/{self.total_laps}"
 
-        # Draw HUD - Top Left                         
-        arcade.Text(lap_str,
-                          20, self.height - 40, 
-                          arcade.color.WHITE, 24, anchor_y="top").draw()
-        
-        arcade.Text(f"Race Time: {time_str} (x{self.playback_speed})", 
-                         20, self.height - 80, 
-                         arcade.color.WHITE, 20, anchor_y="top").draw()
-        
-        if current_track_status == "2":
-            status_text = "YELLOW FLAG"
-            arcade.Text(status_text, 
-                             20, self.height - 120,
-                             arcade.color.YELLOW, 24, bold=True, anchor_y="top").draw()
-        elif current_track_status == "5":
-            status_text = "RED FLAG"
-            arcade.Text(status_text, 
-                             20, self.height - 120, 
-                             arcade.color.RED, 24, bold=True, anchor_y="top").draw()
-        elif current_track_status == "6":
-            status_text = "VIRTUAL SAFETY CAR"
-            arcade.Text(status_text, 
-                             20, self.height - 120, 
-                             arcade.color.ORANGE, 24, bold=True, anchor_y="top").draw()
-        elif current_track_status == "4":
-            status_text = "SAFETY CAR"
-            arcade.Text(status_text, 
-                             20, self.height - 120, 
-                             arcade.color.BROWN, 24, bold=True, anchor_y="top").draw()
+        # Draw HUD - Top Left
+        self._get_text("hud.lap", lap_str,
+                       20, self.height - 40,
+                       arcade.color.WHITE, 24, anchor_y="top").draw()
+
+        paused_suffix = "  [PAUSED]" if self.paused else ""
+        self._get_text("hud.time",
+                       f"Race Time: {time_str} (x{self.playback_speed}){paused_suffix}",
+                       20, self.height - 80,
+                       arcade.color.WHITE, 20, anchor_y="top").draw()
+
+        # One cached label for the flag banner; only its text and colour change.
+        flag_banner = {
+            "2": ("YELLOW FLAG", arcade.color.YELLOW),
+            "4": ("SAFETY CAR", arcade.color.BROWN),
+            "5": ("RED FLAG", arcade.color.RED),
+            "6": ("VIRTUAL SAFETY CAR", arcade.color.ORANGE),
+            "7": ("VSC ENDING", arcade.color.ORANGE),
+        }.get(current_track_status)
+
+        if flag_banner:
+            status_text, status_color = flag_banner
+            self._get_text("hud.flag", status_text,
+                           20, self.height - 120,
+                           status_color, 24, bold=True, anchor_y="top").draw()
 
         # Weather Panel - Top Left block under session info
         weather_info = frame.get("weather") if frame else None
@@ -377,14 +656,15 @@ class F1ReplayWindow(arcade.Window):
         panel_top = self.height - 170
         weather_bottom = None
         if weather_info or self.has_weather:
-            arcade.Text(
+            self._get_text(
+                "weather.header",
                 "Weather",
                 panel_left + 12,
                 panel_top - 10,
                 arcade.color.WHITE,
                 18,
                 bold=True,
-                anchor_y="top"
+                anchor_y="top",
             ).draw()
 
             def _fmt(val, suffix="", precision=1):
@@ -410,14 +690,15 @@ class F1ReplayWindow(arcade.Window):
 
             start_y = panel_top - 36
             line_spacing = 22
-            for idx, line in enumerate(weather_lines):
-                arcade.Text(
+            for line_idx, line in enumerate(weather_lines):
+                self._get_text(
+                    f"weather.line.{line_idx}",
                     line,
                     panel_left + 12,
-                    start_y - idx * line_spacing,
+                    start_y - line_idx * line_spacing,
                     arcade.color.LIGHT_GRAY,
                     14,
-                    anchor_y="top"
+                    anchor_y="top",
                 ).draw()
             weather_bottom = panel_top - panel_height
 
@@ -425,8 +706,9 @@ class F1ReplayWindow(arcade.Window):
         leaderboard_x = max(20, self.width - self.right_ui_margin + 12)
         leaderboard_y = self.height - 40
         
-        arcade.Text("Leaderboard", leaderboard_x, leaderboard_y, 
-                         arcade.color.WHITE, 20, bold=True, anchor_x="left", anchor_y="top").draw()
+        self._get_text("lb.header", "Leaderboard", leaderboard_x, leaderboard_y,
+                       arcade.color.WHITE, 20, bold=True,
+                       anchor_x="left", anchor_y="top").draw()
 
         driver_list = []
         for code, pos in frame["drivers"].items():
@@ -473,13 +755,16 @@ class F1ReplayWindow(arcade.Window):
             else:
                 text_color = color
 
-            arcade.Text(
+            # Cache key is the row index, not the driver: a row keeps its place
+            # on screen while the driver occupying it changes.
+            self._get_text(
+                f"lb.row.{i}",
                 text,
                 left_x,
                 top_y,
                 text_color,
                 16,
-                anchor_x="left", anchor_y="top"
+                anchor_x="left", anchor_y="top",
             ).draw()
 
             # Tyre Icons
@@ -510,15 +795,17 @@ class F1ReplayWindow(arcade.Window):
             "[↑/↓]    Speed +/- (0.5x, 1x, 2x, 4x)",
             "[R]       Restart",
         ]
+
         
         for i, line in enumerate(legend_lines):
-            arcade.Text(
+            self._get_text(
+                f"legend.{i}",
                 line,
                 legend_x,
                 legend_y - (i * 25),
                 arcade.color.LIGHT_GRAY if i > 0 else arcade.color.WHITE,
                 14,
-                bold=(i == 0)
+                bold=(i == 0),
             ).draw()
         
         # Selected Driver Info - Middle Left
@@ -567,13 +854,14 @@ class F1ReplayWindow(arcade.Window):
                 name_rect,
                 driver_color
             )
-            arcade.Text(
+            self._get_text(
+                "driver.name",
                 f"Driver: {self.selected_driver}",
                 info_x + 10,
                 info_y + 20,
                 arcade.color.BLACK,
                 16,
-                anchor_x="left", anchor_y="center"
+                anchor_x="left", anchor_y="center",
             ).draw()
 
             # Driver Stats from Telemetry
@@ -596,31 +884,63 @@ class F1ReplayWindow(arcade.Window):
             lap_time_text = f"Current Lap: {current_lap}"
             stats_lines = [speed_text, gear_text, drs_active_text, lap_time_text]
             for i, line in enumerate(stats_lines):
-                arcade.Text(
+                self._get_text(
+                    f"driver.stat.{i}",
                     line,
                     info_x + 10,
                     info_y - 20 - (i * 25),
                     arcade.color.WHITE,
                     14,
-                    anchor_x="left", anchor_y="center"
+                    anchor_x="left", anchor_y="center",
                 ).draw()
                     
     def on_update(self, delta_time: float):
+        """Advance the replay clock.
+
+        Args:
+            delta_time: Real seconds since the previous update, as reported by
+                arcade. It is neither capped nor evenly spaced, so both are dealt
+                with here before the value is used.
+        """
+        # Cap outliers first: after a stall arcade reports the whole gap as one
+        # delta, and advancing by it would teleport the cars across the track.
+        delta_time = min(delta_time, MAX_FRAME_DELTA)
+
+        # Then low-pass filter what is left so millisecond-scale wobble in the
+        # frame times does not become visible shimmer. The average converges on
+        # the true frame time, so playback speed is unaffected.
+        self._smoothed_delta += (delta_time - self._smoothed_delta) * DELTA_SMOOTHING
+
         if self.paused:
             return
-        self.frame_index += delta_time * FPS * self.playback_speed
-        if self.frame_index >= self.n_frames:
+
+        self.frame_index += self._smoothed_delta * FPS * self.playback_speed
+
+        # Stop cleanly on the last frame rather than spinning against the clamp;
+        # SPACE then restarts the replay from the beginning.
+        if self.frame_index >= self.n_frames - 1:
             self.frame_index = float(self.n_frames - 1)
+            self.paused = True
+        elif self.frame_index < 0.0:
+            self.frame_index = 0.0
 
     def on_key_press(self, symbol: int, modifiers: int):
+        # Seek distance in stored frames, derived from seconds so the on-screen
+        # jump stays the same regardless of the telemetry frame rate. The old
+        # fixed 10-frame step was less than half a second of race time.
+        seek_frames = SEEK_SECONDS * FPS
+
         if symbol == arcade.key.SPACE:
+            # Resuming after the replay ran to the end restarts it from the top.
+            if self.paused and self.frame_index >= self.n_frames - 1:
+                self.frame_index = 0.0
             self.paused = not self.paused
         elif symbol == arcade.key.RIGHT:
-            self.frame_index = min(self.frame_index + 10.0, self.n_frames - 1)
+            self.frame_index = min(self.frame_index + seek_frames, self.n_frames - 1)
         elif symbol == arcade.key.LEFT:
-            self.frame_index = max(self.frame_index - 10.0, 0.0)
+            self.frame_index = max(self.frame_index - seek_frames, 0.0)
         elif symbol == arcade.key.UP:
-            self.playback_speed *= 2.0
+            self.playback_speed = min(self.playback_speed * 2.0, 8.0)
         elif symbol == arcade.key.DOWN:
             self.playback_speed = max(0.1, self.playback_speed / 2.0)
         elif symbol == arcade.key.KEY_1:
@@ -634,6 +954,7 @@ class F1ReplayWindow(arcade.Window):
         elif symbol == arcade.key.R:
             self.frame_index = 0.0
             self.playback_speed = 1.0
+            self.paused = False
 
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
         # Default: clear selection

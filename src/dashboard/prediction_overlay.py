@@ -32,6 +32,53 @@ class PredictionOverlay:
         self.predictions = predictions or {}
         self.show_overlay = True
         self.show_tables = False
+        # Set of drivers currently in a predicted battle. Derived from
+        # self.predictions and refreshed by _rebuild_battle_cache().
+        self._battle_drivers = set()
+        self._rebuild_battle_cache()
+        # Long-lived arcade.Text objects keyed by call site (see _get_text()).
+        self._text_cache = {}
+        self._text_colors = {}
+
+    def _get_text(self, key, text, x, y, color, font_size=12, bold=False,
+                  anchor_x="left", anchor_y="baseline"):
+        """Return a reusable arcade.Text object for one call site.
+
+        The tables view alone draws about eighty labels. Rebuilding an
+        arcade.Text lays the string out glyph by glyph and uploads it to the GPU,
+        so doing that every frame is what made the tables view drop frames. Each
+        call site now keeps one object and only changed attributes are written.
+
+        Args:
+            key: Unique, stable identifier for the call site.
+            text: The string to display.
+            x, y: Screen position.
+            color: Text colour as an RGB or RGBA tuple.
+            font_size, bold, anchor_x, anchor_y: Applied once, at construction.
+
+        Returns:
+            The cached arcade.Text, ready to ``.draw()``.
+        """
+        label = self._text_cache.get(key)
+
+        if label is None:
+            label = arcade.Text(text, x, y, color, font_size, bold=bold,
+                                anchor_x=anchor_x, anchor_y=anchor_y)
+            self._text_cache[key] = label
+            self._text_colors[key] = color
+            return label
+
+        if label.text != text:
+            label.text = text
+        if label.x != x:
+            label.x = x
+        if label.y != y:
+            label.y = y
+        if self._text_colors[key] != color:
+            label.color = color
+            self._text_colors[key] = color
+
+        return label
 
     def update_predictions(self, predictions: dict):
         """
@@ -41,6 +88,36 @@ class PredictionOverlay:
             predictions: New predictions dictionary
         """
         self.predictions = predictions
+        self._rebuild_battle_cache()
+
+    def _rebuild_battle_cache(self):
+        """Recompute which drivers are in a predicted battle.
+
+        Deciding this compares every driver against every other one, so doing it
+        while drawing cost O(drivers^2) on each of the ~60 frames rendered every
+        second. The answer only changes when the predictions change, so it is
+        computed here instead - once per prediction refresh.
+
+        Sorting the predicted positions turns the all-pairs comparison into a
+        single walk over neighbouring entries.
+        """
+        ranked = sorted(
+            (pred.get('predicted_position'), code)
+            for code, pred in self.predictions.items()
+            if pred.get('predicted_position') is not None
+        )
+
+        battles = set()
+        for i in range(len(ranked) - 1):
+            position, code = ranked[i]
+            next_position, next_code = ranked[i + 1]
+            # Same threshold the per-driver check used: closer than half a
+            # position apart means the two are fighting over the same place.
+            if abs(next_position - position) < 0.5:
+                battles.add(code)
+                battles.add(next_code)
+
+        self._battle_drivers = battles
 
     def get_trend_indicator(self, driver_code: str) -> tuple:
         """
@@ -102,32 +179,22 @@ class PredictionOverlay:
         pit_strategy = pred.get('pit_strategy', {})
         return pit_strategy.get('estimated_pit_window')
 
-    def is_in_battle(self, driver_code: str, all_predictions: dict) -> bool:
+    def is_in_battle(self, driver_code: str, all_predictions: dict = None) -> bool:
         """
         Check if driver is predicted to be in a battle.
 
+        Answered from the cache built by _rebuild_battle_cache(), so this is a
+        set lookup rather than a scan over every other driver.
+
         Args:
             driver_code: Driver abbreviation
-            all_predictions: All driver predictions
+            all_predictions: Unused, kept so existing callers keep working. The
+                cache is always derived from self.predictions.
 
         Returns:
             True if driver is in a predicted battle
         """
-        pred = self.predictions.get(driver_code, {})
-        pred_pos = pred.get('predicted_position')
-
-        if pred_pos is None:
-            return False
-
-        # Check against other drivers' predicted positions
-        for other_code, other_pred in all_predictions.items():
-            if other_code == driver_code:
-                continue
-            other_pos = other_pred.get('predicted_position')
-            if other_pos is not None and abs(pred_pos - other_pos) < 0.5:
-                return True
-
-        return False
+        return driver_code in self._battle_drivers
 
     def draw_leaderboard_overlay(self, x: int, y: int, driver_code: str,
                                   row_height: int = 25):
@@ -254,7 +321,8 @@ class PredictionOverlay:
         arcade.draw_rect_outline(bg_rect, arcade.color.CYAN, 2)
 
         # Draw title
-        arcade.Text(
+        self._get_text(
+            "tables.title",
             "PREDICTION TABLES",
             screen_width / 2,
             screen_height * 0.85,
@@ -262,7 +330,7 @@ class PredictionOverlay:
             24,
             bold=True,
             anchor_x='center',
-            anchor_y='center'
+            anchor_y='center',
         ).draw()
 
         # Draw predictions table
@@ -275,7 +343,8 @@ class PredictionOverlay:
 
         for i, header in enumerate(headers):
             x_pos = table_x + sum(col_widths[:i])
-            arcade.Text(
+            self._get_text(
+                f"tables.header.{i}",
                 header,
                 x_pos,
                 table_y,
@@ -283,7 +352,7 @@ class PredictionOverlay:
                 14,
                 bold=True,
                 anchor_x='left',
-                anchor_y='center'
+                anchor_y='center',
             ).draw()
 
         # Draw separator line
@@ -329,25 +398,29 @@ class PredictionOverlay:
                     else:
                         color = arcade.color.WHITE
 
-                    arcade.Text(
+                    # Keyed by grid cell: a cell holds its place on screen while
+                    # the driver shown in it changes.
+                    self._get_text(
+                        f"tables.cell.{row_idx}.{col_idx}",
                         value,
                         x_pos,
                         row_y,
                         color,
                         12,
                         anchor_x='left',
-                        anchor_y='center'
+                        anchor_y='center',
                     ).draw()
 
         # Draw instructions
-        arcade.Text(
+        self._get_text(
+            "tables.hint",
             "Press T to close tables view",
             screen_width / 2,
             screen_height * 0.12,
             arcade.color.LIGHT_GRAY,
             14,
             anchor_x='center',
-            anchor_y='center'
+            anchor_y='center',
         ).draw()
 
     def toggle_overlay(self):

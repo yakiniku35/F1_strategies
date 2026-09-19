@@ -14,7 +14,13 @@ A Python application for predicting Formula 1 race outcomes using machine learni
   - Fuel strategy simulation
   - Track-specific tyre degradation analysis
 - **Interactive Leaderboard:** View predicted positions, gaps, and performance metrics
-- **Schedule Viewer:** Check upcoming race calendars and event information
+- **Final Classification:** Full results at the chequered flag with gaps, retirements and
+  World Championship points (including the fastest-lap bonus), exportable to JSON or CSV
+- **Race Charts:** Lap-by-lap position changes and a tyre-strategy chart, saved as PNG
+- **Timeline Scrubber:** Drag the bar at the bottom of the replay window to jump to any
+  point of the race; flag periods are marked along it
+- **Schedule Viewer:** Check race calendars for any season (pulled from FastF1, with a
+  bundled calendar as an offline fallback)
 - **Data-Driven Insights:** Predictions based on FastF1 telemetry and historical race data
 
 ## Historical Race Replay
@@ -26,6 +32,19 @@ A Python application for predicting Formula 1 race outcomes using machine learni
 - Track status indicators
 
 This project focuses on **prediction and simulation** of future races rather than historical replay functionality.
+
+## Running the tests
+
+```bash
+pip install pytest
+pytest
+```
+
+The suite covers the pure logic - results and points, tyre degradation, strategy
+heuristics, schedule loading, retirement modelling and the replay interpolation -
+and needs no network access. `tests/conftest.py` stubs the heavy optional
+dependencies when they are not installed, so the tests also run on a lean
+machine. The same suite runs in CI on every push.
 
 ## Requirements
 

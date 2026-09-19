@@ -39,6 +39,38 @@ class PredictedRaceSimulator:
     FIRST_STINT_PERCENTAGE = 0.25
     SECOND_STINT_PERCENTAGE = 0.55
 
+    # --- Retirement (DNF) modelling ---------------------------------------
+    # Chance that any one driver fails to finish. Modern F1 averages roughly two
+    # to three retirements from a twenty-car field, so ~10% per driver.
+    DNF_PROBABILITY = 0.10
+
+    # Cause of retirement and how likely each one is, relative to the others.
+    # Collisions and accidents are over-represented on lap 1; see
+    # _generate_retirements() for how that is handled.
+    DNF_CAUSES = (
+        ("Engine", 12),
+        ("Power Unit", 12),
+        ("Gearbox", 8),
+        ("Hydraulics", 8),
+        ("Brakes", 6),
+        ("Suspension", 7),
+        ("Collision", 20),
+        ("Accident", 12),
+        ("Puncture", 8),
+        ("Overheating", 7),
+    )
+
+    # Causes that plausibly happen at the first corner rather than mid-race.
+    FIRST_LAP_CAUSES = ("Collision", "Accident", "Puncture")
+
+    # Chance that a first-lap-plausible cause actually happens on lap 1.
+    FIRST_LAP_DNF_CHANCE = 0.30
+
+    # Retirements cluster in the first half of a race (a car that survives to
+    # three-quarter distance usually finishes), so the retirement lap is drawn
+    # from a triangular distribution peaking here.
+    DNF_LAP_PEAK = 0.35
+
     # Tyre compounds
     COMPOUNDS = {
         "SOFT": {"code": 0, "degradation": 0.8, "pace": 1.0},
@@ -59,7 +91,9 @@ class PredictedRaceSimulator:
         self.year = year
         self.gp = gp
 
-        self.data_provider = FutureRaceDataProvider()
+        # The provider is season-aware: pass the year through so a 2026 request
+        # gets the 2026 calendar and lineup rather than the bundled fallback.
+        self.data_provider = FutureRaceDataProvider(year)
         self.track_manager = TrackLayoutManager()
 
         # Get race info
@@ -405,6 +439,15 @@ class PredictedRaceSimulator:
         # Calculate driver colors (team-based)
         driver_colors = self._get_team_colors()
 
+        # Decide up front who retires and when, so the frame loop only has to
+        # check a lookup rather than roll dice per frame.
+        retirements = self._generate_retirements(
+            total_laps, [q["code"] for q in qualifying]
+        )
+        # Last live telemetry for each retired driver, so the car stays parked
+        # where it stopped instead of jumping to the origin.
+        last_live_state = {}
+
         # Generate frames for each lap
         current_time = 0.0
         dt = 1.0 / self.FPS
@@ -476,6 +519,23 @@ class PredictedRaceSimulator:
 
                 frame_drivers = {}
                 for code, position in positions.items():
+                    retirement = retirements.get(code)
+                    if retirement and lap > retirement["lap"]:
+                        # Already out. rel_dist == 1 is the marker the replay
+                        # uses to hide the car and show OUT in the leaderboard;
+                        # everything else is frozen at the moment it stopped, so
+                        # the finishing order still reflects how far it got.
+                        stopped = last_live_state.get(code)
+                        if stopped is not None:
+                            frame_drivers[code] = {
+                                **stopped,
+                                "rel_dist": 1.0,
+                                "speed": 0.0,
+                                "gear": 0,
+                                "drs": 0,
+                            }
+                        continue
+
                     # Get keyframe data for this driver
                     if lap not in lap_keyframes or code not in lap_keyframes[lap]:
                         continue
@@ -538,6 +598,11 @@ class PredictedRaceSimulator:
                         "drs": 0,
                     }
 
+                    if retirement:
+                        # Still running, but will retire later - keep the most
+                        # recent state so it can be frozen at that point.
+                        last_live_state[code] = frame_drivers[code]
+
                 frames.append({
                     "t": current_time,
                     "lap": lap,
@@ -560,7 +625,52 @@ class PredictedRaceSimulator:
             "driver_colors": driver_colors,
             "race_prediction": race_prediction,
             "drivers": [q["code"] for q in qualifying],
+            "retirements": retirements,
+            "total_laps": total_laps,
         }
+
+    def _generate_retirements(self, total_laps: int, driver_codes: list) -> dict:
+        """Decide which drivers retire from this race, when, and why.
+
+        A race where all twenty cars finish is unusual, and without retirements
+        the "OUT" state the replay and the classification already understand is
+        never exercised.
+
+        Args:
+            total_laps: Race distance in laps.
+            driver_codes: Every driver taking part.
+
+        Returns:
+            Mapping of driver code -> {"lap": int, "cause": str} for the drivers
+            who retire. Drivers who finish are absent from the mapping.
+        """
+        causes = [cause for cause, _ in self.DNF_CAUSES]
+        weights = [weight for _, weight in self.DNF_CAUSES]
+
+        retirements = {}
+
+        for code in driver_codes:
+            if random.random() >= self.DNF_PROBABILITY:
+                continue  # this one finishes
+
+            cause = random.choices(causes, weights=weights, k=1)[0]
+
+            if (cause in self.FIRST_LAP_CAUSES
+                    and random.random() < self.FIRST_LAP_DNF_CHANCE):
+                # First-corner incident.
+                lap = 1
+            else:
+                # Triangular: possible any time, but most likely in the first
+                # half of the race.
+                lap = int(random.triangular(1, max(total_laps, 2),
+                                            max(total_laps, 2) * self.DNF_LAP_PEAK))
+
+            retirements[code] = {
+                "lap": max(1, min(lap, total_laps)),
+                "cause": cause,
+            }
+
+        return retirements
 
     def _get_team_colors(self) -> dict:
         """Get colors for each driver based on team."""
