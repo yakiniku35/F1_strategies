@@ -46,10 +46,13 @@ def test_team_colors_follow_the_loaded_lineup(simulator):
 
 
 def test_simulated_frames_can_open_the_replay_window(simulator):
-    # Everything run_arcade_replay() is handed by predict_future_race().
-    sim_data = simulator.generate_simulated_frames(total_laps=5)
+    # Everything run_arcade_replay() is handed by predict_future_race(), which
+    # simulates the full race distance. (Very short races are not supported:
+    # incident generation assumes at least ten laps.)
+    sim_data = simulator.generate_simulated_frames()
 
     assert sim_data["frames"]
+    assert sim_data["total_laps"] == simulator.race_info["laps"]
     assert set(sim_data["driver_colors"]) == set(sim_data["drivers"])
     for key in ("track_statuses", "example_lap", "total_laps"):
         assert key in sim_data
