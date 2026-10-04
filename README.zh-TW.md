@@ -10,6 +10,9 @@
 > 📼 想看**真實的歷史比賽回放**？本專案有內建一個簡易版（`--replay`），
 > 但更完整的體驗請用 [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay)。
 
+> ⚠️ **已知問題**：目前預測後選擇開啟模擬視窗會直接出錯（`AttributeError: DRIVERS_2025`），
+> 詳見下方「[可以改進的地方](#可以改進的地方)」第 1 點。排位預測表格、策略分析和賽程不受影響。
+
 ---
 
 ## 目錄
@@ -32,7 +35,7 @@
 | 功能 | 說明 | 需要網路？ |
 |------|------|-----------|
 | 🔮 賽事預測 | 預測排位前十名與「預測信心度」，並推薦進站策略 | 選用（沒網路時用內建資料） |
-| 🎬 比賽模擬視窗 | 在賽道上即時模擬整場比賽，含進站、超車、安全車、退賽 | 選用 |
+| 🎬 比賽模擬視窗 | 在賽道上即時模擬整場比賽，含進站、超車、安全車、退賽（⚠️ 目前有 bug 無法開啟，見已知問題） | 選用 |
 | ⏱️ 時間軸拖曳 | 視窗底部進度條可點擊或拖曳跳到任何時刻，並標示黃旗/安全車/紅旗 | 否 |
 | 🏁 完賽成績 | 最終排名、差距、退賽、世界冠軍積分（含最快圈加分），可匯出 JSON / CSV | 否 |
 | 📊 比賽圖表 | 名次變化折線圖、輪胎策略圖，存成 PNG | 否 |
@@ -54,8 +57,9 @@
  └──────────────┘    └──────────────────┘    └───────────────────┘    └──────────────┘
 ```
 
-1. **取得資料**：`FutureRaceDataProvider` 先嘗試用 FastF1 抓該年度賽程與車手；
-   沒網路就用程式內建的 2025 年資料，並在畫面上明確提示。
+1. **取得資料**：`FutureRaceDataProvider` 取得賽程與車手。
+   年份是 2025 時直接使用程式內建的 2025 資料；其他年份會先嘗試 FastF1，失敗才改用內建資料。
+   目前只有「查看賽程表」會在畫面上提示「正在使用內建資料」，預測流程不會提示。
 2. **預測排位**：依「車隊實力分數 + 車手積分 + 隨機變化」排序出發位置。
    因為有隨機成分，**每次執行結果都會不太一樣**。
 3. **逐圈模擬**：`PredictedRaceSimulator` 搭配 `race_dynamics.py`
@@ -240,7 +244,8 @@ rm -rf .fastf1-cache/ cache/
 ```
 
 **Q：沒有網路可以用嗎？**
-可以。預測、模擬、策略分析、賽程都有內建備援資料；只有歷史回放與 AI 助理需要網路。
+大部分可以。預測、策略分析、賽程都有內建備援資料；歷史回放與 AI 助理需要網路。
+要注意 FastF1 仍是必裝套件（預測與模擬模組在載入時就會匯入它），只是不一定要連線。
 
 ---
 
@@ -250,55 +255,71 @@ rm -rf .fastf1-cache/ cache/
 
 ### 🔴 優先處理（影響正確性或使用者認知）
 
-1. **ML 模型訓練了卻沒有被使用**
+1. **模擬視窗會當掉（bug）**
+   `generate_simulated_frames()` 會呼叫 `_get_team_colors()`，而它在
+   `src/simulation/race_simulator.py` 第 691 行讀取 `self.data_provider.DRIVERS_2025`，
+   但 `FutureRaceDataProvider` 已經沒有這個屬性（內建名單現在叫 `FALLBACK_DRIVERS`，實際名單由 `drivers` 屬性提供），
+   所以會拋出 `AttributeError`。修法很小：把迴圈改成 `for driver in self.data_provider.get_drivers_list():`，
+   並補一個呼叫 `generate_simulated_frames()` 的測試，避免再發生。
+
+2. **ML 模型訓練了卻沒有被使用**
    `main.py` 的 `predict_future_race()` 會花幾分鐘訓練 `PreRacePredictor`，
    但訓練好的 `predictor` 之後完全沒被用到——排位其實是
    `FutureRaceDataProvider.estimate_qualifying()` 用「車隊實力 + 積分 + `random.uniform(-5, 5)`」算出來的。
    建議：把模型接進預測流程，或先預設不訓練，並在 README 誠實說明預測是「啟發式 + 隨機」。
 
-2. **「預測信心度」不是真正的信心度**
+3. **「預測信心度」不是真正的信心度**
    目前是依排名與車隊實力給的經驗值，並非模型輸出的機率。建議改名（例如「參考指數」）
    或改用 `ml_enhanced.py` 中已寫好的 `predict_with_confidence()`。
 
-3. **結果無法重現**
+4. **結果無法重現**
    程式多處使用 `random.seed(int(time.time() * 1000))`，同樣的輸入每次結果都不同，
    也沒辦法除錯。建議加一個 `--seed` 參數，預設隨機、指定時可重現。
 
-4. **英文 README 與實際程式不一致**
+5. **英文 README 與實際程式不一致**
    英文版說「不提供歷史回放」，但 `main.py --replay` 其實存在；
    `--year` 寫「預設 2025」，實際是「今年」；舊版中文 README 還提到不存在的 `--refresh-data`。
+   另外，預測流程沒有檢查 `schedule_source` / `drivers_source`，用到內建備援資料時不會告訴使用者。
 
 ### 🟡 結構整理（讓程式更好維護）
 
-5. **重複的模組**：`f1_data.py` vs `external_f1_data.py`、`arcade_replay.py`（2000 行）vs
+6. **重複的模組**：`f1_data.py` vs `external_f1_data.py`、`arcade_replay.py`（2000 行）vs
    `external_replay.py`（近 1000 行）功能高度重疊，可合併或抽出共用部分。
-6. **`ml_enhanced.py` 沒接上主程式**，只在 `examples/` 裡用到。
-7. **`temp_replay` 是失效的 git 子模組連結**（沒有 `.gitmodules`），CI 還得特別繞過，建議移除。
-8. **`docs/` 有 17 份文件**，很多是開發紀錄（`*_COMPLETE.md`、`*_SUMMARY.md`），
+7. **`ml_enhanced.py` 沒接上主程式**，只在 `examples/` 裡用到。
+8. **`temp_replay` 是失效的 git 子模組連結**（沒有 `.gitmodules`），CI 還得特別繞過，建議移除。
+9. **`docs/` 有 17 份文件**，很多是開發紀錄（`*_COMPLETE.md`、`*_SUMMARY.md`），
    可以整理成一份 `CHANGELOG.md` 加幾份真正的使用指南；`docs/f1_tracl.txt` 檔名應是 `track` 的錯字。
-9. **相依套件太重且沒分層**：`pytest` 被放進 `requirements.txt`；`groq`、`python-dotenv` 標示「選用」
+10. **相依套件太重且沒分層**：`pytest` 被放進 `requirements.txt`；`groq`、`python-dotenv` 標示「選用」
    但 `arcade_replay.py → ai_chat.py` 在最上層就 `import dotenv`，沒裝會直接當掉。
    建議拆成 `requirements.txt`（核心）、`requirements-ml.txt`、`requirements-dev.txt`，
    或改用 `pyproject.toml` 的 optional dependencies。
-10. **小地方**：`interactive_mode()` 用遞迴回到主選單（應改成 `while` 迴圈）；
+11. **小地方**：`interactive_mode()` 用遞迴回到主選單（應改成 `while` 迴圈）；
     多處 `except Exception as e:` 卻沒用到 `e`，錯誤原因被吞掉；
     年份範圍 `2018–2030` 寫死在程式裡。
 
 ### 🟢 功能擴充：做成輕量網頁版
 
 目前所有功能都要在本機裝 Python + Arcade（需要 OpenGL 視窗），沒辦法直接放上網。
-好消息是：**核心邏輯（模擬、策略、成績計算）本身只用到 numpy / pandas，跟畫面是分開的**，
-所以很適合做成網頁。依「輕量程度」由高到低有三種做法：
+好消息是：**策略分析（`strategy_analyzer.py`）和成績計算（`race_results.py`）只用到 Python 標準函式庫，
+跟畫面完全分開**，現在就能搬上網頁。
+
+不過**完整的比賽模擬還不行**：`race_simulator.py` 會匯入 `track_layouts.py` 和 `f1_data.py`，
+這兩個檔案一載入就 `import fastf1`；`src/simulation/__init__.py` 也會連帶載入它們，
+所以連 `race_dynamics.py` 都沒辦法單獨匯入而不碰到 FastF1。
+要把模擬搬上網頁，得先把 FastF1 資料層拆開（例如改成需要時才在函式裡 `import fastf1`）。
+
+依「輕量程度」由高到低有三種做法：
 
 | 做法 | 說明 | 優點 | 缺點 |
 |------|------|------|------|
 | **A. 純靜態網頁（最輕量，推薦）** | 用 Python 預先跑好賽程、預測結果、策略比較，輸出成 JSON；網頁用原生 HTML + JavaScript + `<canvas>` 讀取並播放 | 免伺服器、免費放在 **GitHub Pages**、載入快 | 無法即時重新計算（可用 GitHub Actions 每週自動更新） |
-| **B. 瀏覽器內跑 Python（Pyodide）** | 用 [Pyodide](https://pyodide.org/) 直接在瀏覽器執行 `strategy_analyzer.py`、`race_dynamics.py` | 仍是靜態網頁，但可即時互動計算 | 首次載入約 10 MB 以上；FastF1 無法在瀏覽器執行 |
+| **B. 瀏覽器內跑 Python（Pyodide）** | 用 [Pyodide](https://pyodide.org/) 直接在瀏覽器執行 `strategy_analyzer.py`、`race_results.py`（模擬要先解耦 FastF1） | 仍是靜態網頁，但可即時互動計算 | 首次載入約 10 MB 以上；FastF1 無法在瀏覽器執行 |
 | **C. 小型 API 伺服器** | 用 FastAPI / Flask 包一層 API，前端呼叫 | 功能最完整，可即時抓 FastF1 | 需要租伺服器（Render、Fly.io 等），較不輕量 |
 
 建議的第一步是 **A**：
 1. 新增一個 `export_web_data.py`，把 `view_schedule`、預測排位、`generate_simulated_frames()`
    （降採樣到每圈幾個點）、策略比較輸出成 `web/data/*.json`。
+   這一步在本機或 GitHub Actions 跑，可以照常使用 FastF1，但要先修好上面第 1 點的 bug。
 2. 在 `web/` 放一個 `index.html`（不使用任何框架），用 `<canvas>` 畫賽道與車子、用表格顯示成績。
 3. 開啟 GitHub Pages，指向 `web/` 資料夾。
 4. （選用）設定 GitHub Actions 每週重新產生 JSON，讓資料保持最新。
