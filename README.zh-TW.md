@@ -163,6 +163,24 @@ python run_integrated.py --year 2024 --gp Monaco --mode full
 `--mode` 可選 `full`、`predict-only`、`tables-only`、`simulation-only`，
 輸出資料夾用 `--output` 指定（預設 `output/`）。
 
+### 方法四：策略分析網頁版
+
+`web/` 是一個不需要伺服器的靜態網頁：選一站大獎賽，就能比較各種進站策略、看 race trace 圖，
+還有 Undercut 計算器。網頁本身不做任何計算，所有數字都由 `src/strategy_analyzer.py` 預先算好。
+
+```bash
+# 1. 產生資料檔 web/data/strategy.json（只需要 pandas，不需要 FastF1）
+python scripts/build_web_data.py
+
+# 2. 在本機開啟（不能直接雙擊 HTML 檔，瀏覽器會擋住讀取資料檔）
+python -m http.server -d web 8000
+# 瀏覽器打開 http://localhost:8000
+```
+
+**放上 GitHub Pages**：到 GitHub 儲存庫的 **Settings → Pages → Source** 選 **GitHub Actions**。
+之後每次推送到 `main`、且動到 `web/`、`scripts/build_web_data.py` 或策略模型時，
+`.github/workflows/pages.yml` 會自動重新產生資料並部署。
+
 ---
 
 ## 輸出檔案
@@ -197,6 +215,8 @@ pytest
 F1_strategies/
 ├── main.py                     # 主程式入口（互動選單 + 命令列）
 ├── run_integrated.py           # 整合管線入口（進階）
+├── scripts/build_web_data.py   # 產生策略網頁的資料檔
+├── web/index.html              # 策略分析網頁（純 HTML + JavaScript）
 ├── requirements.txt            # 相依套件
 ├── src/
 │   ├── simulation/
@@ -293,7 +313,9 @@ rm -rf .fastf1-cache/ cache/
 
 ### 🟢 功能擴充：做成輕量網頁版
 
-目前所有功能都要在本機裝 Python + Arcade（需要 OpenGL 視窗），沒辦法直接放上網。
+✅ **第一步已完成**：策略分析已經有網頁版（見上方「方法四」），採用下表的做法 A。
+
+其他功能目前還是要在本機裝 Python + Arcade（需要 OpenGL 視窗）。
 好消息是：**策略分析（`strategy_analyzer.py`）和成績計算（`race_results.py`）只用到 Python 標準函式庫，
 跟畫面完全分開**，現在就能搬上網頁。
 
@@ -310,13 +332,11 @@ rm -rf .fastf1-cache/ cache/
 | **B. 瀏覽器內跑 Python（Pyodide）** | 用 [Pyodide](https://pyodide.org/) 直接在瀏覽器執行 `strategy_analyzer.py`、`race_results.py`（模擬要先解耦 FastF1） | 仍是靜態網頁，但可即時互動計算 | 首次載入約 10 MB 以上；FastF1 無法在瀏覽器執行 |
 | **C. 小型 API 伺服器** | 用 FastAPI / Flask 包一層 API，前端呼叫 | 功能最完整，可即時抓 FastF1 | 需要租伺服器（Render、Fly.io 等），較不輕量 |
 
-建議的第一步是 **A**：
-1. 新增一個 `export_web_data.py`，把 `view_schedule`、預測排位、`generate_simulated_frames()`
-   （降採樣到每圈幾個點）、策略比較輸出成 `web/data/*.json`。
-   這一步在本機或 GitHub Actions 跑，可以照常使用 FastF1。
-2. 在 `web/` 放一個 `index.html`（不使用任何框架），用 `<canvas>` 畫賽道與車子、用表格顯示成績。
-3. 開啟 GitHub Pages，指向 `web/` 資料夾。
-4. （選用）設定 GitHub Actions 每週重新產生 JSON，讓資料保持最新。
+接下來可以沿用同一套做法擴充：
+1. 在 `scripts/build_web_data.py` 加上賽程與預測排位。
+2. 把 `generate_simulated_frames()` 的結果降採樣（每圈幾個點）輸出成 JSON，
+   在網頁用 `<canvas>` 播放比賽。這一步在 GitHub Actions 跑，可以照常安裝 FastF1。
+3. （選用）設定 GitHub Actions 定期重新產生資料，讓賽程保持最新。
 
 ---
 
