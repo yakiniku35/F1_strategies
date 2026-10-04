@@ -711,7 +711,7 @@ class FutureRaceDataProvider:
         qualifying = []
         for driver in self.drivers:
             team_strength = self.get_team_strength(driver["team"])
-            driver_points = self._estimated_points.get(driver["code"], 0)
+            driver_points = self.estimated_points.get(driver["code"], 0)
 
             # Base score: lower is better
             # Team strength has major impact, driver points add variation
@@ -727,7 +727,7 @@ class FutureRaceDataProvider:
                 "name": driver["name"],
                 "team": driver["team"],
                 "grid": 0,  # Will be set after sorting
-                "points": self._estimated_points.get(driver["code"], 0),
+                "points": self.estimated_points.get(driver["code"], 0),
                 "score": final_score,
             })
 
