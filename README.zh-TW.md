@@ -10,9 +10,6 @@
 > 📼 想看**真實的歷史比賽回放**？本專案有內建一個簡易版（`--replay`），
 > 但更完整的體驗請用 [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay)。
 
-> ⚠️ **已知問題**：目前預測後選擇開啟模擬視窗會直接出錯（`AttributeError: DRIVERS_2025`），
-> 詳見下方「[可以改進的地方](#可以改進的地方)」第 1 點。排位預測表格、策略分析和賽程不受影響。
-
 ---
 
 ## 目錄
@@ -35,7 +32,7 @@
 | 功能 | 說明 | 需要網路？ |
 |------|------|-----------|
 | 🔮 賽事預測 | 預測排位前十名與「預測信心度」，並推薦進站策略 | 選用（沒網路時用內建資料） |
-| 🎬 比賽模擬視窗 | 在賽道上即時模擬整場比賽，含進站、超車、安全車、退賽（⚠️ 目前有 bug 無法開啟，見已知問題） | 選用 |
+| 🎬 比賽模擬視窗 | 在賽道上即時模擬整場比賽，含進站、超車、安全車、退賽 | 選用 |
 | ⏱️ 時間軸拖曳 | 視窗底部進度條可點擊或拖曳跳到任何時刻，並標示黃旗/安全車/紅旗 | 否 |
 | 🏁 完賽成績 | 最終排名、差距、退賽、世界冠軍積分（含最快圈加分），可匯出 JSON / CSV | 否 |
 | 📊 比賽圖表 | 名次變化折線圖、輪胎策略圖，存成 PNG | 否 |
@@ -166,6 +163,24 @@ python run_integrated.py --year 2024 --gp Monaco --mode full
 `--mode` 可選 `full`、`predict-only`、`tables-only`、`simulation-only`，
 輸出資料夾用 `--output` 指定（預設 `output/`）。
 
+### 方法四：策略分析網頁版
+
+`web/` 是一個不需要伺服器的靜態網頁：選一站大獎賽，就能比較各種進站策略、看 race trace 圖，
+還有 Undercut 計算器。網頁本身不做任何計算，所有數字都由 `src/strategy_analyzer.py` 預先算好。
+
+```bash
+# 1. 產生資料檔 web/data/strategy.json（只需要 pandas，不需要 FastF1）
+python scripts/build_web_data.py
+
+# 2. 在本機開啟（不能直接雙擊 HTML 檔，瀏覽器會擋住讀取資料檔）
+python -m http.server -d web 8000
+# 瀏覽器打開 http://localhost:8000
+```
+
+**放上 GitHub Pages**：到 GitHub 儲存庫的 **Settings → Pages → Source** 選 **GitHub Actions**。
+之後每次推送到 `main`、且動到 `web/`、`scripts/build_web_data.py` 或策略模型時，
+`.github/workflows/pages.yml` 會自動重新產生資料並部署。
+
 ---
 
 ## 輸出檔案
@@ -200,6 +215,8 @@ pytest
 F1_strategies/
 ├── main.py                     # 主程式入口（互動選單 + 命令列）
 ├── run_integrated.py           # 整合管線入口（進階）
+├── scripts/build_web_data.py   # 產生策略網頁的資料檔
+├── web/index.html              # 策略分析網頁（純 HTML + JavaScript）
 ├── requirements.txt            # 相依套件
 ├── src/
 │   ├── simulation/
@@ -255,12 +272,9 @@ rm -rf .fastf1-cache/ cache/
 
 ### 🔴 優先處理（影響正確性或使用者認知）
 
-1. **模擬視窗會當掉（bug）**
-   `generate_simulated_frames()` 會呼叫 `_get_team_colors()`，而它在
-   `src/simulation/race_simulator.py` 第 691 行讀取 `self.data_provider.DRIVERS_2025`，
-   但 `FutureRaceDataProvider` 已經沒有這個屬性（內建名單現在叫 `FALLBACK_DRIVERS`，實際名單由 `drivers` 屬性提供），
-   所以會拋出 `AttributeError`。修法很小：把迴圈改成 `for driver in self.data_provider.get_drivers_list():`，
-   並補一個呼叫 `generate_simulated_frames()` 的測試，避免再發生。
+1. ~~**預測與模擬視窗會當掉**~~（已修正）
+   原本 `estimate_qualifying()` 讀到還沒初始化的積分表、`_get_team_colors()` 讀取已不存在的
+   `DRIVERS_2025`，導致 `--predict` 出錯。現已修正，並由 `tests/test_race_simulator.py` 涵蓋整個預測流程。
 
 2. **ML 模型訓練了卻沒有被使用**
    `main.py` 的 `predict_future_race()` 會花幾分鐘訓練 `PreRacePredictor`，
@@ -299,7 +313,9 @@ rm -rf .fastf1-cache/ cache/
 
 ### 🟢 功能擴充：做成輕量網頁版
 
-目前所有功能都要在本機裝 Python + Arcade（需要 OpenGL 視窗），沒辦法直接放上網。
+✅ **第一步已完成**：策略分析已經有網頁版（見上方「方法四」），採用下表的做法 A。
+
+其他功能目前還是要在本機裝 Python + Arcade（需要 OpenGL 視窗）。
 好消息是：**策略分析（`strategy_analyzer.py`）和成績計算（`race_results.py`）只用到 Python 標準函式庫，
 跟畫面完全分開**，現在就能搬上網頁。
 
@@ -316,13 +332,11 @@ rm -rf .fastf1-cache/ cache/
 | **B. 瀏覽器內跑 Python（Pyodide）** | 用 [Pyodide](https://pyodide.org/) 直接在瀏覽器執行 `strategy_analyzer.py`、`race_results.py`（模擬要先解耦 FastF1） | 仍是靜態網頁，但可即時互動計算 | 首次載入約 10 MB 以上；FastF1 無法在瀏覽器執行 |
 | **C. 小型 API 伺服器** | 用 FastAPI / Flask 包一層 API，前端呼叫 | 功能最完整，可即時抓 FastF1 | 需要租伺服器（Render、Fly.io 等），較不輕量 |
 
-建議的第一步是 **A**：
-1. 新增一個 `export_web_data.py`，把 `view_schedule`、預測排位、`generate_simulated_frames()`
-   （降採樣到每圈幾個點）、策略比較輸出成 `web/data/*.json`。
-   這一步在本機或 GitHub Actions 跑，可以照常使用 FastF1，但要先修好上面第 1 點的 bug。
-2. 在 `web/` 放一個 `index.html`（不使用任何框架），用 `<canvas>` 畫賽道與車子、用表格顯示成績。
-3. 開啟 GitHub Pages，指向 `web/` 資料夾。
-4. （選用）設定 GitHub Actions 每週重新產生 JSON，讓資料保持最新。
+接下來可以沿用同一套做法擴充：
+1. 在 `scripts/build_web_data.py` 加上賽程與預測排位。
+2. 把 `generate_simulated_frames()` 的結果降採樣（每圈幾個點）輸出成 JSON，
+   在網頁用 `<canvas>` 播放比賽。這一步在 GitHub Actions 跑，可以照常安裝 FastF1。
+3. （選用）設定 GitHub Actions 定期重新產生資料，讓賽程保持最新。
 
 ---
 

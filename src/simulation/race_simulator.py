@@ -688,7 +688,7 @@ class PredictedRaceSimulator:
         }
 
         colors = {}
-        for driver in self.data_provider.DRIVERS_2025:
+        for driver in self.data_provider.get_drivers_list():
             team = driver["team"]
             colors[driver["code"]] = team_colors.get(team, (200, 200, 200))
 

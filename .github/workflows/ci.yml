@@ -54,4 +54,4 @@ jobs:
 
       - name: Byte-compile every module
         # Cheap guard against syntax errors in files the tests do not import.
-        run: python -m compileall -q main.py run_integrated.py src tests
+        run: python -m compileall -q main.py run_integrated.py src tests scripts

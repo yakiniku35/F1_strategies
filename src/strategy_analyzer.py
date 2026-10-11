@@ -195,42 +195,65 @@ class StrategyAnalyzer:
     def _estimate_strategy_time(self, pit_laps: List[int], compounds: List[str]) -> float:
         """
         Estimate total race time for a strategy.
-        
+
         Args:
             pit_laps: List of laps to pit on
             compounds: List of compounds (should be one more than pit_laps, or will default to MEDIUM for first stint)
-            
+
         Returns:
             Estimated total race time in seconds
         """
-        total_time = 0.0
+        return sum(self.strategy_lap_times(pit_laps, compounds))
+
+    def strategy_lap_times(self, pit_laps: List[int], compounds: List[str]) -> List[float]:
+        """
+        Estimate every lap time of a strategy, one entry per lap.
+
+        The pit stop loss is charged to the pit lap itself (the first lap of the
+        new stint), so the list sums to the strategy's total race time.
+
+        Args:
+            pit_laps: List of laps to pit on
+            compounds: List of compounds (should be one more than pit_laps, or will default to MEDIUM for first stint)
+
+        Returns:
+            Lap times in seconds, ``total_laps`` long
+        """
+        lap_times = []
         current_lap = 1
-        
+        pending_pit_loss = 0.0
+
         # If compounds list doesn't match expected size (pit_laps + 1), add default starting compound
         # This handles cases where only pit stop compounds are specified
         if len(compounds) == len(pit_laps):
             compounds = ["MEDIUM"] + compounds
-        
+
+        # Get track-specific base lap time
+        base_lap_time = self.TRACK_BASE_LAP_TIMES.get(self.track_name, self.TRACK_BASE_LAP_TIMES["default"])
+
         for i, pit_lap in enumerate(pit_laps + [self.total_laps + 1]):
             compound = compounds[i]
             stint_length = pit_lap - current_lap
-            
-            # Get track-specific base lap time
-            base_lap_time = self.TRACK_BASE_LAP_TIMES.get(self.track_name, self.TRACK_BASE_LAP_TIMES["default"])
+
             compound_delta = self.COMPOUND_PACE.get(compound, 0.0)
             degradation_rate = self.COMPOUND_DEGRADATION.get(compound, 0.02) * self.tyre_stress
-            
+
             for lap in range(stint_length):
                 lap_time = base_lap_time + compound_delta + (lap * degradation_rate)
-                total_time += lap_time
-            
+                lap_times.append(lap_time + pending_pit_loss)
+                pending_pit_loss = 0.0
+
             # Add pit stop time
             if pit_lap <= self.total_laps:
-                total_time += self.PIT_STOP_TIME_LOSS
-            
+                pending_pit_loss += self.PIT_STOP_TIME_LOSS
+
             current_lap = pit_lap
-        
-        return total_time
+
+        # Only reachable with malformed pit laps; keep the loss in the total.
+        if pending_pit_loss and lap_times:
+            lap_times[-1] += pending_pit_loss
+
+        return lap_times
     
     def analyze_undercut_opportunity(self, current_lap: int, 
                                      gap_to_car_ahead: float,
